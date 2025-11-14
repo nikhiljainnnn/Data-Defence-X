@@ -324,11 +324,14 @@ rule Obfuscated_Code_Indicators
             exe_path = region_info.get('exe_path', '')
             process_name = region_info.get('process_name', '')
             
-            # Skip trusted paths
+            # Skip trusted paths (check both full path and relative path)
             if exe_path:
+                exe_path_lower = exe_path.lower()
                 for trusted_path in self.whitelist.get('trusted_paths', []):
-                    if not trusted_path.startswith('_comment'):
-                        if exe_path.lower().startswith(trusted_path.lower()):
+                    if not str(trusted_path).startswith('_comment') and isinstance(trusted_path, str):
+                        trusted_lower = trusted_path.lower()
+                        # Check if path starts with trusted path OR contains trusted path pattern
+                        if exe_path_lower.startswith(trusted_lower) or trusted_lower in exe_path_lower:
                             return matches  # Skip scanning
             
             # Skip trusted processes
@@ -361,19 +364,22 @@ rule Obfuscated_Code_Indicators
                     if region_info:
                         exe_path = region_info.get('exe_path', '').lower()
                         
-                        # Skip if from known JIT locations
+                        # Skip if from known JIT locations (legitimate apps that use RWX memory)
                         jit_paths = [
                             'program files\\google\\chrome',
                             'program files (x86)\\google\\chrome',
                             'program files\\mozilla firefox',
                             'appdata\\local\\microsoft\\edge',
                             'program files\\microsoft',
-                            'windows\\microsoft.net'
+                            'windows\\microsoft.net',
+                            'appdata\\local\\programs',  # User-installed apps like Canva
+                            'canva'  # Canva specifically
                         ]
                         
-                        for jit_path in jit_paths:
-                            if jit_path in exe_path:
-                                continue  # Skip JIT processes
+                        # Check if process is from JIT location - skip if so
+                        is_jit_process = any(jit_path in exe_path for jit_path in jit_paths)
+                        if is_jit_process:
+                            continue  # Skip this match - legitimate JIT process
                 
                 # Create match object
                 yara_match = YARAMatch(

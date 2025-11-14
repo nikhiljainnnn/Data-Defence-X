@@ -66,9 +66,15 @@ TRUSTED_PATHS = {
     'c:\\windows\\temp',
 }
 
-# Suspicious patterns in command lines
+# Suspicious patterns in command lines (case-insensitive matching)
 SUSPICIOUS_PATTERNS = [
-    r'powershell.*-encodedcommand',
+    r'powershell.*-encodedcommand',  # Matches -EncodedCommand, -encodedcommand, etc.
+    r'powershell.*-enc\s',  # Matches -enc followed by space (short form)
+    r'powershell.*-windowstyle\s+hidden',  # Hidden window
+    r'powershell.*-executionpolicy\s+bypass',  # Bypass execution policy
+    r'powershell.*-noprofile',  # No profile
+    r'powershell.*-noninteractive',  # Non-interactive
+    r'cmd.*\/c.*powershell',  # CMD launching PowerShell
     r'cmd.*\/c.*base64',
     r'rundll32.*\.dll',
     r'regsvcs.*\.exe',
@@ -83,6 +89,8 @@ SUSPICIOUS_PATTERNS = [
     r'wget.*http',
     r'python.*-c.*import',
     r'script.*-executionpolicy.*bypass',
+    r'iex\s*\(',  # Invoke-Expression
+    r'downloadstring',  # DownloadString method
 ]
 
 
@@ -178,10 +186,30 @@ class ProcessMonitorAgent:
             # Get basic info
             name = proc.name()
             
+            # Get command line - try multiple methods for better capture
+            cmdline = ''
             try:
-                cmdline = ' '.join(proc.cmdline()) if proc.cmdline() else ''
+                # Method 1: Try cmdline() first (most reliable)
+                cmdline_parts = proc.cmdline()
+                if cmdline_parts:
+                    cmdline = ' '.join(cmdline_parts)
             except Exception:
-                cmdline = ''
+                try:
+                    # Method 2: Try wmic as fallback (Windows only)
+                    import subprocess
+                    result = subprocess.run(
+                        ['wmic', 'process', 'where', f'ProcessId={pid}', 'get', 'CommandLine', '/format:list'],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            if line.startswith('CommandLine='):
+                                cmdline = line.split('=', 1)[1].strip()
+                                break
+                except Exception:
+                    pass
             
             try:
                 exe_path = proc.exe() if proc.exe() else ''
@@ -237,22 +265,33 @@ class ProcessMonitorAgent:
         
         try:
             name = str(process_info['name']).lower()
-            cmdline = str(process_info['cmdline']).lower()
-            exe_path = str(process_info['exe_path']).lower()
+            cmdline_str = str(process_info.get('cmdline', '')).lower()
+            exe_path = str(process_info.get('exe_path', '')).lower()
             
             # Check if whitelisted
             if self.is_whitelisted(process_info):
                 return 0, []
             
             # Check for suspicious command line patterns
-            pattern_matches = self.check_suspicious_patterns(process_info['cmdline'])
+            pattern_matches = self.check_suspicious_patterns(cmdline_str)
             if pattern_matches:
-                score += 40
+                # Higher score for encoded commands (very suspicious)
+                if any('encodedcommand' in p.lower() or '-enc' in p.lower() for p in pattern_matches):
+                    score += 60  # High score for encoded commands
+                else:
+                    score += 40
                 indicators.extend(pattern_matches)
+            
+            # Also check for base64 patterns in command line (even if no other patterns match)
+            if not pattern_matches and self.is_base64_encoded(cmdline_str):
+                # Long base64 strings in command line are suspicious
+                if len(cmdline_str) > 50:  # Only flag substantial base64
+                    score += 30
+                    indicators.append("Contains Base64-encoded data in command line")
             
             # High entropy analysis (adjusted threshold)
             try:
-                entropy = self.calculate_entropy(cmdline)
+                entropy = self.calculate_entropy(cmdline_str)
                 if entropy > 5.5:  # Raised threshold from 5.0
                     score += 25
                     indicators.append(f"High cmdline entropy: {entropy:.2f}")
@@ -260,13 +299,13 @@ class ProcessMonitorAgent:
                 pass
             
             # Base64 encoding detection (only if other indicators present)
-            if score > 0 and self.is_base64_encoded(cmdline):
+            if score > 0 and self.is_base64_encoded(cmdline_str):
                 score += 20
                 indicators.append("Contains Base64-encoded data")
             
             # YARA signature scanning on command line
             try:
-                yara_matches = self.yara_scanner.scan_command_line(cmdline)
+                yara_matches = self.yara_scanner.scan_command_line(cmdline_str)
                 if yara_matches:
                     # Count by severity
                     critical_count = sum(1 for m in yara_matches if m.severity == 'critical')
@@ -448,8 +487,8 @@ class ProcessMonitorAgent:
             # Calculate suspicion score
             score, indicators = self.calculate_suspicion_score(detailed_info)
             
-            # Only return event if suspicious (threshold can be adjusted)
-            if score >= 50:  # Lower threshold for real-time monitoring
+            # Only return event if suspicious (lower threshold for better detection)
+            if score >= 30:  # Lowered from 50 to catch more suspicious processes
                 return ProcessEvent(
                     timestamp=datetime.now(),
                     event_type='created',

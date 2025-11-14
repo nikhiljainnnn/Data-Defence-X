@@ -62,6 +62,18 @@ class MemoryMonitorAgent:
     
     def _load_whitelist(self) -> set:
         """Load list of trusted system and common legitimate processes"""
+        # Load from JSON whitelist file
+        try:
+            import json
+            with open('config/whitelist.json', 'r') as f:
+                whitelist_data = json.load(f)
+                processes = whitelist_data.get('trusted_processes', [])
+                # Convert to lowercase set
+                return {p.lower() for p in processes if isinstance(p, str) and not p.startswith('//')}
+        except:
+            pass
+        
+        # Fallback to hardcoded list
         return {
             'system', 'smss.exe', 'csrss.exe', 'wininit.exe',
             'services.exe', 'lsass.exe', 'svchost.exe', 'dwm.exe',
@@ -71,7 +83,8 @@ class MemoryMonitorAgent:
             'onedrive.exe', 'widgets.exe', 'widgetservice.exe',
             'phoneexperiencehost.exe', 'searchexec.exe', 'searchhost.exe',
             'uihost.exe', 'securityhealthsystray.exe', 'nahimic3.exe',
-            'nahimicnotifsys.exe', 'msedgewebview2.exe', 'crossdeviceresume.exe'
+            'nahimicnotifsys.exe', 'msedgewebview2.exe', 'crossdeviceresume.exe',
+            'canva.exe', 'canvadesktop.exe'
         }
     
     def scan_process(self, pid: int) -> List[InjectionIndicator]:
@@ -94,13 +107,28 @@ class MemoryMonitorAgent:
             if not handle:
                 return indicators
             
-            # Get process name
+            # Get process name and path
             process_name = self._get_process_name(pid)
+            process_path = self._get_process_path(pid)
             
-            # Skip whitelisted processes
+            # Skip whitelisted processes (check both name and path)
             if process_name.lower() in self.whitelist:
                 kernel32.CloseHandle(handle)
                 return indicators
+            
+            # Check if process is in trusted path
+            if process_path:
+                try:
+                    import json
+                    with open('config/whitelist.json', 'r') as f:
+                        whitelist_data = json.load(f)
+                        trusted_paths = whitelist_data.get('trusted_paths', [])
+                        for trusted_path in trusted_paths:
+                            if isinstance(trusted_path, str) and process_path.lower().startswith(trusted_path.lower()):
+                                kernel32.CloseHandle(handle)
+                                return indicators
+                except:
+                    pass
             
             # 1. Check for RWX memory regions (highly suspicious)
             # Only flag if there are multiple large regions or very large single region
@@ -188,10 +216,13 @@ class MemoryMonitorAgent:
                         min(region.region_size, 1024*1024)
                     )
                     if memory_data:
+                        # Pass process info to YARA scanner for whitelist checking
                         matches = self.yara_scanner.scan_memory_region(memory_data, {
                             'base_address': region.base_address,
                             'size': region.region_size,
-                            'protection': region.protection
+                            'protection': region.protection,
+                            'process_name': process_name,
+                            'exe_path': process_path
                         })
                         yara_matches.extend(matches)
                 
@@ -353,6 +384,15 @@ class MemoryMonitorAgent:
         # Requires reading thread context and inspecting APC queue
         
         return False  # Placeholder
+    
+    def _get_process_path(self, pid: int) -> str:
+        """Get process executable path"""
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            return proc.exe() if proc.exe() else ''
+        except:
+            return ''
     
     def _get_process_name(self, pid: int) -> str:
         """Get process name from PID"""
