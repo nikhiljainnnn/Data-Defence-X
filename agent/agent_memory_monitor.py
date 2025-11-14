@@ -53,11 +53,12 @@ class MemoryMonitorAgent:
     Replaces Volatility for live system scanning
     """
     
-    def __init__(self):
+    def __init__(self, yara_scanner=None):
         self.whitelist = self._load_whitelist()
         self.scan_cache = {}
         self.last_scan = {}
-        self.yara_scanner = YARAScanner()  # Initialize YARA scanner
+        # Use provided YARA scanner or create new one
+        self.yara_scanner = yara_scanner if yara_scanner else YARAScanner()
     
     def _load_whitelist(self) -> set:
         """Load list of trusted system and common legitimate processes"""

@@ -27,11 +27,20 @@ class YARAScanner:
     YARA signature scanner with whitelist support
     """
     
-    def __init__(self, rules_dir: str = "rules/yara"):
+    # Class variable to track if rules have been loaded (suppress duplicate messages)
+    _rules_loaded = False
+    _load_lock = None
+    
+    def __init__(self, rules_dir: str = "rules/yara", suppress_messages: bool = False):
+        import threading
+        if YARAScanner._load_lock is None:
+            YARAScanner._load_lock = threading.Lock()
+        
         self.rules_dir = rules_dir
         self.compiled_rules = None
         self.rule_count = 0
         self.whitelist = self._load_whitelist()
+        self.suppress_messages = suppress_messages
         
         # Load and compile rules
         self._load_rules()
@@ -75,7 +84,11 @@ class YARAScanner:
                 })
                 self.rule_count = len(rule_files)
                 if self.rule_count > 0:
-                    print(f"[*] Loaded {self.rule_count} YARA rule file(s)")
+                    # Only print once per session (first instance)
+                    with YARAScanner._load_lock:
+                        if not YARAScanner._rules_loaded and not self.suppress_messages:
+                            print(f"[*] Loaded {self.rule_count} YARA rule file(s)")
+                            YARAScanner._rules_loaded = True
             except yara.SyntaxError as e:
                 print(f"[!] YARA syntax error: {e}")
                 self.compiled_rules = None

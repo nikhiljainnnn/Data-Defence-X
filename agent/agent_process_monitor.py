@@ -92,12 +92,13 @@ class ProcessMonitorAgent:
     Detects suspicious process activities
     """
     
-    def __init__(self, history_size: int = 1000):
+    def __init__(self, history_size: int = 1000, yara_scanner=None):
         self.running = False
         self.process_history = deque(maxlen=history_size)
         self.monitored_pids = set()
         self.previous_pids = set()
-        self.yara_scanner = YARAScanner()  # Initialize YARA scanner
+        # Use provided YARA scanner or create new one
+        self.yara_scanner = yara_scanner if yara_scanner else YARAScanner()
     
     def calculate_entropy(self, data: str) -> float:
         """Calculate Shannon entropy of a string"""
