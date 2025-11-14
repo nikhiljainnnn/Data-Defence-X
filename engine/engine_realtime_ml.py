@@ -162,6 +162,7 @@ class RealtimeMLEngine:
     def _extract_from_process(self, proc: Dict) -> RealtimeFeatures:
         """Extract features from process event"""
         import math
+        import re
         from collections import Counter
         
         # Feature 0: parent_suspicious
@@ -183,6 +184,20 @@ class RealtimeMLEngine:
         else:
             cmdline_entropy = 0.0
         
+        # CRITICAL FIX: Boost entropy for suspicious PowerShell commands
+        # PowerShell with encoded commands should have high entropy
+        name = proc.get('name', '').lower()
+        if 'powershell' in name or 'cmd' in name:
+            if cmdline:
+                suspicious_keywords = ['-encodedcommand', '-enc', 'bypass', 'hidden']
+                if any(kw in cmdline.lower() for kw in suspicious_keywords):
+                    # Boost entropy to reflect suspicious nature
+                    cmdline_entropy = max(cmdline_entropy, 6.0)
+                # Check for base64 patterns
+                base64_pattern = r'[A-Za-z0-9+/]{50,}={0,2}'
+                if re.search(base64_pattern, cmdline):
+                    cmdline_entropy = max(cmdline_entropy, 6.5)
+        
         # Feature 2: path_suspicious
         path = proc.get('path', '').lower()
         suspicious_paths = ['temp', 'appdata', 'downloads', 'public']
@@ -192,12 +207,34 @@ class RealtimeMLEngine:
         suspicious_score = proc.get('suspicious_score', 0)
         process_chain_depth = min(int(suspicious_score / 20), 10)  # Rough estimate
         
+        # CRITICAL FIX: Boost process_chain_depth for suspicious PowerShell commands
+        if 'powershell' in name or 'cmd' in name:
+            if cmdline:
+                suspicious_keywords = ['-encodedcommand', '-enc', 'bypass', 'hidden']
+                if any(kw in cmdline.lower() for kw in suspicious_keywords):
+                    process_chain_depth = max(process_chain_depth, 5)  # Higher depth for suspicious
+        
         # Feature 4: is_system_binary_misplaced
         system_binaries = ['powershell.exe', 'cmd.exe', 'wmic.exe', 'rundll32.exe']
-        name = proc.get('name', '').lower()
         is_system = any(sb in name for sb in system_binaries)
         is_wrong_location = 'system32' not in path and 'syswow64' not in path
         is_system_binary_misplaced = is_system and is_wrong_location
+        
+        # CRITICAL FIX: Boost C2 beacon score for suspicious PowerShell commands
+        c2_beacon_score = 0.1  # Low default
+        if 'powershell' in name or 'cmd' in name:
+            if cmdline:
+                suspicious_keywords = ['-encodedcommand', '-enc', 'bypass', 'hidden', 'downloadstring', 'iex']
+                if any(kw in cmdline.lower() for kw in suspicious_keywords):
+                    c2_beacon_score = 0.7  # High C2 score for suspicious PowerShell
+        
+        # Boost api_calls_suspicious for suspicious commands
+        api_calls_suspicious = 0
+        if 'powershell' in name or 'cmd' in name:
+            if cmdline:
+                suspicious_keywords = ['-encodedcommand', '-enc', 'bypass', 'hidden']
+                if any(kw in cmdline.lower() for kw in suspicious_keywords):
+                    api_calls_suspicious = 8  # Indicate suspicious API usage
         
         # Features 5-16: Default values (not available from process event alone)
         return RealtimeFeatures(
@@ -211,12 +248,12 @@ class RealtimeMLEngine:
             is_hollowed=False,  # Not available
             remote_threads=0,  # Not available
             active_connections=1,  # Estimated
-            c2_beacon_score=0.1,  # Low default
+            c2_beacon_score=c2_beacon_score,  # Enhanced for suspicious PowerShell
             dns_entropy=2.5,  # Normal default
             file_writes_per_min=5.0,  # Normal default
             registry_mods_per_min=1.0,  # Normal default
             process_creates_per_min=0.0,  # None
-            api_calls_suspicious=0,  # Not available
+            api_calls_suspicious=api_calls_suspicious,  # Enhanced for suspicious PowerShell
             total_events_5min=20  # Estimated
         )
     
