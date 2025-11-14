@@ -1,9 +1,3 @@
-"""
-DataDefenceX - Enhanced ML Model Training v2.1
-Train models for BOTH forensic and real-time detection
-With improved preprocessing, validation, and error handling
-"""
-
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -43,10 +37,6 @@ def print_status(text, status="info"):
 
 
 class FeatureMapper:
-    """
-    Maps 57 Volatility features to 17 real-time features
-    Enables hybrid detection: forensic OR real-time
-    """
     
     # Real-time feature definitions (17 features)
     REALTIME_FEATURES = [
@@ -71,16 +61,6 @@ class FeatureMapper:
     
     @staticmethod
     def map_volatility_to_realtime(X_volatility):
-        """
-        Map 57 Volatility features to 17 real-time features
-        Uses intelligent mapping based on feature relationships
-        
-        Args:
-            X_volatility: DataFrame with Volatility features
-            
-        Returns:
-            numpy array with 17 real-time features
-        """
         n_samples = len(X_volatility)
         X_realtime = np.zeros((n_samples, 17))
         
@@ -168,15 +148,6 @@ class FeatureMapper:
 
 
 def validate_dataset(data):
-    """
-    Validate dataset structure and content
-    
-    Args:
-        data: pandas DataFrame
-        
-    Returns:
-        tuple: (is_valid, error_message)
-    """
     print_status("Validating dataset...", "info")
     
     # Check minimum size
@@ -214,15 +185,6 @@ def validate_dataset(data):
 
 
 def preprocess_data(data):
-    """
-    Preprocess dataset with improved handling
-    
-    Args:
-        data: pandas DataFrame
-        
-    Returns:
-        tuple: (X_full, y, feature_cols)
-    """
     print_status("Preprocessing data...", "info")
     
     # Handle Class column
@@ -276,11 +238,6 @@ def preprocess_data(data):
 
 
 def train_dual_models(dataset_file):
-    """
-    Train TWO models:
-    1. Full forensic model (57 features) - for post-incident analysis
-    2. Lightweight real-time model (17 features) - for live detection
-    """
     
     print_section("DUAL MODEL TRAINING SYSTEM v2.1")
     print_status("Training BOTH forensic and real-time models", "info")
@@ -647,7 +604,6 @@ def quick_model_test():
 
 
 def main():
-    """Main entry point"""
     print(f"""
 {Colors.INFO}╔═══════════════════════════════════════════════════════╗
 ║                                                       ║
