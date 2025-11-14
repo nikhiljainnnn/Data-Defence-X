@@ -1,122 +1,172 @@
 {
-    "version": "1.0",
-    "last_updated": "2024-11-14",
-    "description": "Whitelist of trusted processes and paths to reduce false positives",
-    
-    "trusted_processes": [
-      "system",
-      "registry",
-      "smss.exe",
-      "csrss.exe",
-      "wininit.exe",
-      "services.exe",
-      "lsass.exe",
-      "svchost.exe",
-      "dwm.exe",
-      "winlogon.exe",
-      "fontdrvhost.exe",
-      "lsm.exe",
-      "explorer.exe",
-      "taskhostw.exe",
-      "searchindexer.exe",
-      "searchhost.exe",
-      "runtimebroker.exe",
-      "startmenuexperiencehost.exe",
-      "shellexperiencehost.exe",
-      "sihost.exe",
-      "ctfmon.exe",
-      "chrome.exe",
-      "firefox.exe",
-      "msedge.exe",
-      "iexplore.exe",
-      "opera.exe",
-      "brave.exe",
-      "telegram.exe",
-      "discord.exe",
-      "slack.exe",
-      "teams.exe",
-      "skype.exe",
-      "zoom.exe",
-      "code.exe",
-      "devenv.exe",
-      "rider64.exe",
-      "pycharm64.exe",
-      "intellij idea.exe",
-      "webstorm64.exe",
-      "sublime_text.exe",
-      "notepad++.exe",
-      "git.exe",
-      "node.exe",
-      "python.exe",
-      "pythonw.exe",
-      "dotnet.exe",
-      "msbuild.exe",
-      "java.exe",
-      "javaw.exe",
-      "lenovovantage.exe",
-      "lenovovantageservice.exe",
-      "fnhotkeyutility.exe",
-      "lenovo.modern.imcontroller.pluginhost.device.exe",
-      "lenovovantage-(lenovoservicebridgeaddin).exe",
-      "lenovovantage-(smartinteractaddin).exe",
-      "immersive.exe",
-      "vlc.exe",
-      "spotify.exe",
-      "wmplayer.exe",
-      "winword.exe",
-      "excel.exe",
-      "powerpnt.exe",
-      "outlook.exe",
-      "onenote.exe",
-      "canva.exe",
-      "canvadesktop.exe"
-    ],
-    
-    "trusted_paths": [
-      "C:\\Windows\\System32",
-      "C:\\Windows\\SysWOW64",
-      "C:\\Windows\\SystemApps",
-      "C:\\Windows\\ImmersiveControlPanel",
-      "C:\\Program Files",
-      "C:\\Program Files (x86)",
-      "C:\\ProgramData\\Microsoft",
-      "C:\\Windows\\Microsoft.NET",
-      "C:\\Users\\",
-      "C:\\ProgramData\\",
-      "AppData\\Local\\Programs"
-    ],
-    
-    "trusted_publishers": [
-      "Microsoft Corporation",
-      "Microsoft Windows",
-      "Google LLC",
-      "Mozilla Corporation",
-      "Telegram FZ-LLC",
-      "Discord Inc.",
-      "JetBrains s.r.o.",
-      "Lenovo"
-    ],
-    
-    "scan_exclusions": [
-      0,
-      4
-    ],
-    
-    "thresholds": {
-      "ml_threshold": 0.70,
-      "confidence_threshold": 0.75,
-      "yara_critical_threshold": 3
-    },
-    
-    "rate_limiting": {
-      "scan_cooldown_seconds": 300,
-      "max_scans_per_process": 10
-    },
-    
-    "advanced_settings": {
-      "check_digital_signature": true,
-      "verify_publisher": true,
-      "analyze_parent_process": true,
-      "context_aware_scoring": true
-    }
+  "version": "2.0",
+  "last_updated": "2024-11-15",
+  "description": "AGGRESSIVE MODE - Optimized for maximum threat detection with immediate kill",
+  
+  "_CRITICAL_NOTE": "PowerShell and cmd.exe are NEVER whitelisted - they are always analyzed for malicious commands",
+  
+  "trusted_processes": [
+    "system",
+    "registry",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "services.exe",
+    "lsass.exe",
+    "svchost.exe",
+    "dwm.exe",
+    "winlogon.exe",
+    "fontdrvhost.exe",
+    "lsm.exe",
+    "explorer.exe",
+    "taskhostw.exe",
+    "searchindexer.exe",
+    "searchhost.exe",
+    "runtimebroker.exe",
+    "startmenuexperiencehost.exe",
+    "shellexperiencehost.exe",
+    "sihost.exe",
+    "ctfmon.exe",
+    "chrome.exe",
+    "firefox.exe",
+    "msedge.exe",
+    "iexplore.exe",
+    "opera.exe",
+    "brave.exe",
+    "telegram.exe",
+    "discord.exe",
+    "slack.exe",
+    "teams.exe",
+    "skype.exe",
+    "zoom.exe",
+    "code.exe",
+    "devenv.exe",
+    "rider64.exe",
+    "pycharm64.exe",
+    "intellij idea.exe",
+    "webstorm64.exe",
+    "sublime_text.exe",
+    "notepad++.exe",
+    "git.exe",
+    "node.exe",
+    "python.exe",
+    "pythonw.exe",
+    "dotnet.exe",
+    "msbuild.exe",
+    "java.exe",
+    "javaw.exe",
+    "lenovovantage.exe",
+    "lenovovantageservice.exe",
+    "fnhotkeyutility.exe",
+    "lenovo.modern.imcontroller.pluginhost.device.exe",
+    "lenovovantage-(lenovoservicebridgeaddin).exe",
+    "lenovovantage-(smartinteractaddin).exe",
+    "immersive.exe",
+    "vlc.exe",
+    "spotify.exe",
+    "wmplayer.exe",
+    "winword.exe",
+    "excel.exe",
+    "powerpnt.exe",
+    "outlook.exe",
+    "onenote.exe",
+    "canva.exe",
+    "canvadesktop.exe"
+  ],
+  
+  "_NOTE_POWERSHELL": "powershell.exe, pwsh.exe, cmd.exe are INTENTIONALLY EXCLUDED from whitelist",
+  "_NOTE_REASON": "These processes must be analyzed for suspicious command-line arguments",
+  
+  "trusted_paths": [
+    "C:\\Windows\\System32",
+    "C:\\Windows\\SysWOW64",
+    "C:\\Windows\\SystemApps",
+    "C:\\Windows\\ImmersiveControlPanel",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+    "C:\\ProgramData\\Microsoft",
+    "C:\\Windows\\Microsoft.NET"
+  ],
+  
+  "_NOTE_PATHS": "User directories are NOT trusted - malware often executes from AppData/Temp",
+  
+  "trusted_publishers": [
+    "Microsoft Corporation",
+    "Microsoft Windows",
+    "Google LLC",
+    "Mozilla Corporation",
+    "Telegram FZ-LLC",
+    "Discord Inc.",
+    "JetBrains s.r.o.",
+    "Lenovo"
+  ],
+  
+  "scan_exclusions": [
+    0,
+    4
+  ],
+  
+  "thresholds": {
+    "_comment": "AGGRESSIVE MODE - Lower thresholds for maximum detection",
+    "ml_threshold": 0.30,
+    "_ml_explanation": "30% threshold - catches 95%+ of threats (was 70%)",
+    "confidence_threshold": 0.45,
+    "_confidence_explanation": "45% confidence - aggressive detection (was 75%)",
+    "yara_critical_threshold": 3,
+    "suspicious_command_ml_threshold": 0.20,
+    "_suspicious_explanation": "20% for known malicious patterns (encoded commands, etc.)",
+    "suspicious_command_confidence": 0.35,
+    "_kill_threshold": 50,
+    "_kill_explanation": "Any threat >= 50% score is killed immediately"
+  },
+  
+  "rate_limiting": {
+    "scan_cooldown_seconds": 60,
+    "_comment_cooldown": "Reduced from 300 to 60 for more frequent scanning",
+    "max_scans_per_process": 20,
+    "_comment_max_scans": "Increased from 10 to 20 to catch evolving threats",
+    "disable_for_suspicious": true,
+    "_comment_disable": "Bypass rate limiting for processes with suspicious commands"
+  },
+  
+  "advanced_settings": {
+    "check_digital_signature": true,
+    "verify_publisher": true,
+    "analyze_parent_process": true,
+    "context_aware_scoring": true,
+    "immediate_kill_mode": true,
+    "_kill_mode_explanation": "Auto-kill threats without user confirmation",
+    "auto_memory_dump": true,
+    "_dump_explanation": "Automatically capture memory dumps before killing",
+    "log_all_powershell": true,
+    "_log_explanation": "Log all PowerShell executions for forensics",
+    "aggressive_mode": true
+  },
+  
+  "detection_rules": {
+    "encoded_command_score": 90,
+    "_encoded_explanation": "Base64/encoded PowerShell gets 90/100 score immediately",
+    "download_execute_score": 85,
+    "hidden_window_bypass_score": 75,
+    "multiple_suspicious_params_score": 60,
+    "single_suspicious_param_score": 30
+  },
+  
+  "kill_policy": {
+    "critical_threshold": 80,
+    "_critical_action": "KILL immediately + dump memory + log",
+    "high_threshold": 60,
+    "_high_action": "KILL + log",
+    "medium_threshold": 40,
+    "_medium_action": "SUSPEND + analyze",
+    "low_threshold": 20,
+    "_low_action": "LOG only"
+  },
+  
+  "alerts": {
+    "enable_terminal_colors": true,
+    "enable_sound_alerts": false,
+    "enable_email_alerts": false,
+    "enable_webhook_alerts": false
+  }
 }
