@@ -67,7 +67,9 @@
       "excel.exe",
       "powerpnt.exe",
       "outlook.exe",
-      "onenote.exe"
+      "onenote.exe",
+      "canva.exe",
+      "canvadesktop.exe"
     ],
     
     "trusted_paths": [
@@ -78,7 +80,10 @@
       "C:\\Program Files",
       "C:\\Program Files (x86)",
       "C:\\ProgramData\\Microsoft",
-      "C:\\Windows\\Microsoft.NET"
+      "C:\\Windows\\Microsoft.NET",
+      "C:\\Users\\",
+      "C:\\ProgramData\\",
+      "AppData\\Local\\Programs"
     ],
     
     "trusted_publishers": [
