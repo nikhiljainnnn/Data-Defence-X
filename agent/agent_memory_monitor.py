@@ -60,10 +60,17 @@ class MemoryMonitorAgent:
         self.yara_scanner = YARAScanner()  # Initialize YARA scanner
     
     def _load_whitelist(self) -> set:
-        """Load list of trusted system processes"""
+        """Load list of trusted system and common legitimate processes"""
         return {
             'system', 'smss.exe', 'csrss.exe', 'wininit.exe',
-            'services.exe', 'lsass.exe', 'svchost.exe', 'dwm.exe'
+            'services.exe', 'lsass.exe', 'svchost.exe', 'dwm.exe',
+            # Common legitimate applications that use RWX memory
+            'chrome.exe', 'msedge.exe', 'firefox.exe', 'code.exe',
+            'cursor.exe', 'devenv.exe', 'notepad++.exe', 'claude.exe',
+            'onedrive.exe', 'widgets.exe', 'widgetservice.exe',
+            'phoneexperiencehost.exe', 'searchexec.exe', 'searchhost.exe',
+            'uihost.exe', 'securityhealthsystray.exe', 'nahimic3.exe',
+            'nahimicnotifsys.exe', 'msedgewebview2.exe', 'crossdeviceresume.exe'
         }
     
     def scan_process(self, pid: int) -> List[InjectionIndicator]:
@@ -95,23 +102,38 @@ class MemoryMonitorAgent:
                 return indicators
             
             # 1. Check for RWX memory regions (highly suspicious)
+            # Only flag if there are multiple large regions or very large single region
             rwx_regions = self._find_rwx_regions(handle, pid)
             if rwx_regions:
-                indicators.append(InjectionIndicator(
-                    pid=pid,
-                    process_name=process_name,
-                    indicator_type="rwx_region",
-                    severity="high",
-                    details={
-                        'region_count': len(rwx_regions),
-                        'total_size': sum(r.region_size for r in rwx_regions),
-                        'regions': [
-                            {'base': hex(r.base_address), 'size': r.region_size}
-                            for r in rwx_regions
-                        ]
-                    },
-                    timestamp=datetime.now()
-                ))
+                total_size = sum(r.region_size for r in rwx_regions)
+                region_count = len(rwx_regions)
+                
+                # Filter: Only flag if suspicious pattern
+                # - Multiple regions (>2) OR
+                # - Very large single region (>10MB) OR
+                # - Multiple medium regions (>3) with total >5MB
+                is_suspicious = (
+                    region_count > 2 or
+                    (region_count == 1 and total_size > 10 * 1024 * 1024) or
+                    (region_count > 3 and total_size > 5 * 1024 * 1024)
+                )
+                
+                if is_suspicious:
+                    indicators.append(InjectionIndicator(
+                        pid=pid,
+                        process_name=process_name,
+                        indicator_type="rwx_region",
+                        severity="high" if region_count > 3 or total_size > 10 * 1024 * 1024 else "medium",
+                        details={
+                            'region_count': region_count,
+                            'total_size': total_size,
+                            'regions': [
+                                {'base': hex(r.base_address), 'size': r.region_size}
+                                for r in rwx_regions[:5]  # Limit to first 5
+                            ]
+                        },
+                        timestamp=datetime.now()
+                    ))
             
             # 2. Check for process hollowing
             if self._is_process_hollowed(handle, pid):

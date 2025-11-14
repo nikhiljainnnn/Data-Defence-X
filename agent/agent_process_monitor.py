@@ -424,6 +424,48 @@ class ProcessMonitorAgent:
         
         return events
     
+    def analyze_process(self, process_info: Dict) -> Optional[ProcessEvent]:
+        """
+        Analyze a process and return ProcessEvent if suspicious
+        
+        Args:
+            process_info: Dict with 'pid', 'ppid', 'name' from psutil
+        
+        Returns:
+            ProcessEvent if suspicious, None otherwise
+        """
+        try:
+            pid = process_info.get('pid')
+            if not pid:
+                return None
+            
+            # Get detailed process info
+            detailed_info = self.get_process_info(pid)
+            if not detailed_info:
+                return None
+            
+            # Calculate suspicion score
+            score, indicators = self.calculate_suspicion_score(detailed_info)
+            
+            # Only return event if suspicious (threshold can be adjusted)
+            if score >= 50:  # Lower threshold for real-time monitoring
+                return ProcessEvent(
+                    timestamp=datetime.now(),
+                    event_type='created',
+                    pid=pid,
+                    name=detailed_info['name'],
+                    cmdline=detailed_info['cmdline'],
+                    parent_pid=detailed_info.get('parent_pid'),
+                    exe_path=detailed_info['exe_path'],
+                    suspicious_indicators=indicators,
+                    suspicion_score=score
+                )
+            
+            return None
+        
+        except Exception as e:
+            return None
+    
     def get_process_tree(self, pid: int) -> Optional[Dict]:
         """Get process tree for a given PID"""
         try:
