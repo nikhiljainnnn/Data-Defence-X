@@ -13,24 +13,36 @@ from typing import List, Dict, Optional, Tuple
 
 @dataclass
 class RealtimeFeatures:
-    """17 lightweight features for real-time detection"""
+    """20 features for real-time detection (17 original + 3 YARA)"""
+    # Process features (5)
     parent_suspicious: bool
     cmdline_entropy: float
     path_suspicious: bool
     process_chain_depth: int
     is_system_binary_misplaced: bool
+    
+    # Memory features (4)
     rwx_region_count: int
     private_memory_mb: float
     is_hollowed: bool
     remote_threads: int
+    
+    # Network features (3)
     active_connections: int
     c2_beacon_score: float
     dns_entropy: float
+    
+    # Behavioral features (5)
     file_writes_per_min: float
     registry_mods_per_min: float
     process_creates_per_min: float
     api_calls_suspicious: int
     total_events_5min: int
+    
+    # YARA features (3)
+    yara_critical_matches: int = 0
+    yara_high_matches: int = 0
+    yara_total_matches: int = 0
 
 
 @dataclass
@@ -174,6 +186,11 @@ class RealtimeMLEngine:
         is_system_binary_misplaced = is_system and is_wrong_location
         
         # Features 5-16: Default values (not available from process event alone)
+        # YARA features will be extracted from process event if available
+        yara_critical = proc.get('yara_critical_matches', 0)
+        yara_high = proc.get('yara_high_matches', 0)
+        yara_total = proc.get('yara_total_matches', 0)
+        
         return RealtimeFeatures(
             parent_suspicious=parent_suspicious,
             cmdline_entropy=cmdline_entropy,
@@ -191,7 +208,10 @@ class RealtimeMLEngine:
             registry_mods_per_min=1.0,  # Normal default
             process_creates_per_min=0.0,  # None
             api_calls_suspicious=0,  # Not available
-            total_events_5min=20  # Estimated
+            total_events_5min=20,  # Estimated
+            yara_critical_matches=yara_critical,
+            yara_high_matches=yara_high,
+            yara_total_matches=yara_total
         )
     
     def _extract_from_memory(self, indicators: List) -> RealtimeFeatures:
@@ -199,24 +219,49 @@ class RealtimeMLEngine:
         if not indicators:
             return None
         
+        # Extract YARA matches from indicators
+        yara_critical = 0
+        yara_high = 0
+        yara_total = 0
+        
         # Aggregate indicators
-        total_rwx = sum(ind.rwx_regions for ind in indicators if hasattr(ind, 'rwx_regions'))
-        total_private_mb = sum(ind.private_bytes / (1024*1024) 
-                              for ind in indicators if hasattr(ind, 'private_bytes'))
-        total_remote_threads = sum(ind.remote_threads 
-                                  for ind in indicators if hasattr(ind, 'remote_threads'))
+        total_rwx = 0
+        total_private_mb = 0.0
+        total_remote_threads = 0
         
-        # Count YARA matches
-        yara_matches = []
         for ind in indicators:
-            if hasattr(ind, 'yara_matches'):
-                yara_matches.extend(ind.yara_matches)
-        
-        critical_yara = sum(1 for m in yara_matches if m.severity == 'critical')
+            # Extract YARA matches
+            if hasattr(ind, 'indicator_type') and ind.indicator_type == 'yara_signature':
+                if hasattr(ind, 'details'):
+                    details = ind.details
+                    yara_critical += details.get('critical_matches', 0)
+                    yara_high += details.get('high_matches', 0)
+                    yara_total += details.get('match_count', 0)
+            
+            # Extract RWX regions
+            if hasattr(ind, 'rwx_regions'):
+                total_rwx += ind.rwx_regions
+            elif hasattr(ind, 'indicator_type') and ind.indicator_type == 'rwx_region':
+                if hasattr(ind, 'details'):
+                    total_rwx += ind.details.get('region_count', 0)
+            
+            # Extract private memory
+            if hasattr(ind, 'private_bytes'):
+                total_private_mb += ind.private_bytes / (1024*1024)
+            
+            # Extract remote threads
+            if hasattr(ind, 'remote_threads'):
+                total_remote_threads += ind.remote_threads
+            elif hasattr(ind, 'indicator_type') and ind.indicator_type == 'remote_thread':
+                if hasattr(ind, 'details'):
+                    total_remote_threads += ind.details.get('thread_count', 0)
         
         # Check for hollowing
-        is_hollowed = any(hasattr(ind, 'is_hollowed') and ind.is_hollowed 
-                         for ind in indicators)
+        is_hollowed = any(
+            (hasattr(ind, 'indicator_type') and ind.indicator_type == 'hollowed') or
+            (hasattr(ind, 'is_hollowed') and ind.is_hollowed)
+            for ind in indicators
+        )
         
         # Build features
         return RealtimeFeatures(
@@ -226,17 +271,20 @@ class RealtimeMLEngine:
             process_chain_depth=2,  # Normal
             is_system_binary_misplaced=False,  # Not available
             rwx_region_count=min(total_rwx, 50),
-            private_memory_mb=min(total_private_mb, 500.0),
+            private_memory_mb=min(total_private_mb, 500.0) if total_private_mb > 0 else 50.0,
             is_hollowed=is_hollowed,
             remote_threads=min(total_remote_threads, 10),
             active_connections=5,  # Estimated
-            c2_beacon_score=critical_yara * 0.2,  # Based on YARA
+            c2_beacon_score=min(yara_critical * 0.2, 1.0),  # Based on YARA
             dns_entropy=4.0,  # Slightly elevated
             file_writes_per_min=10.0,  # Estimated
             registry_mods_per_min=5.0,  # Estimated
             process_creates_per_min=0.0,  # Not available
-            api_calls_suspicious=critical_yara,
-            total_events_5min=len(indicators) * 10
+            api_calls_suspicious=yara_critical,
+            total_events_5min=len(indicators) * 10,
+            yara_critical_matches=yara_critical,
+            yara_high_matches=yara_high,
+            yara_total_matches=yara_total
         )
     
     def predict(self, features: RealtimeFeatures) -> DetectionResult:
@@ -263,7 +311,9 @@ class RealtimeMLEngine:
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
                 
-                # Convert to numpy array
+                # Convert to numpy array (17 features - model was trained with 17 features)
+                # Note: YARA features are extracted but not used in prediction (model compatibility)
+                # YARA data is still used in contributing_features and threat scoring
                 feature_array = np.array([[
                     float(features.parent_suspicious),
                     features.cmdline_entropy,
@@ -281,10 +331,9 @@ class RealtimeMLEngine:
                     features.registry_mods_per_min,
                     features.process_creates_per_min,
                     features.api_calls_suspicious,
-                    features.total_events_5min,
-                    features.yara_critical_matches,
-                    features.yara_high_matches,
-                    features.yara_total_matches
+                    features.total_events_5min
+                    # Note: YARA features (yara_critical_matches, yara_high_matches, yara_total_matches)
+                    # are NOT included here because the model was trained with only 17 features
                 ]])
                 
                 # Make prediction
@@ -294,8 +343,23 @@ class RealtimeMLEngine:
             # Get confidence (max probability)
             confidence = max(proba)
             
-            # Calculate threat score (0-100)
-            threat_score = proba[1] * 100  # Probability of malicious * 100
+            # Calculate base threat score (0-100) from ML prediction
+            base_threat_score = proba[1] * 100  # Probability of malicious * 100
+            
+            # Enhance threat score with YARA data (if available)
+            # YARA matches are strong indicators, so boost score accordingly
+            yara_critical = getattr(features, 'yara_critical_matches', 0)
+            yara_high = getattr(features, 'yara_high_matches', 0)
+            
+            # Boost threat score based on YARA matches
+            yara_boost = 0
+            if yara_critical > 0:
+                yara_boost = min(yara_critical * 10, 30)  # Up to +30 points for critical
+            elif yara_high > 0:
+                yara_boost = min(yara_high * 5, 15)  # Up to +15 points for high
+            
+            # Final threat score (capped at 100)
+            threat_score = min(base_threat_score + yara_boost, 100.0)
             
             # Identify contributing features
             contributing = self._identify_contributing_features(features)
@@ -319,6 +383,18 @@ class RealtimeMLEngine:
     def _identify_contributing_features(self, features: RealtimeFeatures) -> List[str]:
         """Identify which features contributed most to detection"""
         contributors = []
+        
+        # Check YARA matches first (high priority indicators)
+        yara_critical = getattr(features, 'yara_critical_matches', 0)
+        yara_high = getattr(features, 'yara_high_matches', 0)
+        yara_total = getattr(features, 'yara_total_matches', 0)
+        
+        if yara_critical > 0:
+            contributors.append(f"YARA critical matches ({yara_critical})")
+        if yara_high > 0:
+            contributors.append(f"YARA high severity matches ({yara_high})")
+        if yara_total > 0 and yara_critical == 0 and yara_high == 0:
+            contributors.append(f"YARA signature matches ({yara_total})")
         
         # Check suspicious features
         if features.rwx_region_count > 5:
