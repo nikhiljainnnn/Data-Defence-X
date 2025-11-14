@@ -270,6 +270,9 @@ class ProcessMonitorAgent:
             
             # Check if whitelisted
             if self.is_whitelisted(process_info):
+                # Debug for PowerShell
+                if 'powershell' in name:
+                    print(f"[DEBUG] PowerShell process whitelisted in calculate_suspicion_score, skipping: {name}")
                 return 0, []
             
             # Check for suspicious command line patterns
@@ -484,15 +487,32 @@ class ProcessMonitorAgent:
             if not detailed_info:
                 return None
             
-            # Use cmdline from process_info if available (more reliable for new processes)
+            # PRIORITY: Use cmdline from process_info if available (more reliable for new processes)
+            # This is critical because get_process_info() might not capture the full command line
+            # for newly created processes, especially PowerShell with encoded commands
             if process_info.get('cmdline'):
                 if isinstance(process_info['cmdline'], list):
-                    detailed_info['cmdline'] = ' '.join(process_info['cmdline'])
+                    cmdline_from_info = ' '.join(process_info['cmdline'])
                 else:
-                    detailed_info['cmdline'] = str(process_info['cmdline'])
+                    cmdline_from_info = str(process_info['cmdline'])
+                
+                # Only use get_process_info cmdline if process_info cmdline is empty
+                if cmdline_from_info and len(cmdline_from_info.strip()) > 0:
+                    detailed_info['cmdline'] = cmdline_from_info
+                # Otherwise keep the one from get_process_info (might be empty, but that's OK)
+            
+            # Debug: Log cmdline being analyzed (for PowerShell)
+            if 'powershell' in detailed_info.get('name', '').lower():
+                print(f"[DEBUG] Analyzing cmdline: {detailed_info.get('cmdline', '(empty)')[:200]}")
             
             # Calculate suspicion score
             score, indicators = self.calculate_suspicion_score(detailed_info)
+            
+            # Debug: Log score calculation (for PowerShell)
+            if 'powershell' in detailed_info.get('name', '').lower():
+                print(f"[DEBUG] Suspicion score calculated: {score}, Indicators count: {len(indicators)}")
+                if indicators:
+                    print(f"[DEBUG] Top indicators: {indicators[:3]}")
             
             # Only return event if suspicious (lower threshold for better detection)
             if score >= 30:  # Lowered from 50 to catch more suspicious processes
