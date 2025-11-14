@@ -1,6 +1,6 @@
 """
-DataDefenceX - Real-Time Detection System FIXED v2.0
-Main integration with whitelist support and false positive reduction
+DataDefenceX - Real-Time Detection System FINAL FIXED v2.1
+Properly detects suspicious PowerShell commands even from System32
 """
 
 import time
@@ -185,38 +185,74 @@ class RealtimeDetectionSystem:
         # Tracking for rate limiting
         self.scan_history = {}  # PID -> {'last_scan': datetime, 'scan_count': int}
     
-    def _is_whitelisted_process(self, name: str, path: str = None) -> bool:
-        """Check if process is whitelisted"""
+    def _is_suspicious_command(self, cmdline: str, process_name: str) -> bool:
+        """
+        Check if command line contains suspicious patterns
+        Returns True if suspicious, False if benign
+        """
+        if not cmdline:
+            return False
+        
+        cmdline_lower = cmdline.lower()
+        
+        # Suspicious keywords for PowerShell/cmd
+        suspicious_keywords = [
+            '-encodedcommand', '-enc', '-e ',
+            'bypass', 'hidden', '-windowstyle',
+            '-noprofile', '-noninteractive', '-noni',
+            'invoke-expression', 'iex', 'invoke-webrequest', 'iwr',
+            'downloadstring', 'downloadfile',
+            'webclient', 'net.webclient', 'webrequest',
+            'bitstransfer', 'start-bitstransfer',
+            'invoke-mimikatz', 'invoke-shellcode',
+            'empire', 'metasploit', 'meterpreter',
+            'amsi', 'reflection.assembly',
+            'system.reflection', 'frombase64string'
+        ]
+        
+        # Check for suspicious patterns
+        for keyword in suspicious_keywords:
+            if keyword in cmdline_lower:
+                return True
+        
+        # Check for base64 patterns (long encoded strings)
+        import re
+        base64_pattern = r'[A-Za-z0-9+/]{50,}={0,2}'
+        if re.search(base64_pattern, cmdline):
+            return True
+        
+        return False
+    
+    def _is_whitelisted_process(self, name: str, path: str = None, cmdline: str = None) -> bool:
+        """
+        Check if process is whitelisted
+        IMPORTANT: PowerShell/cmd with suspicious commands are NEVER whitelisted
+        """
         if not name:
             return False
         
         name_lower = name.lower()
+        
+        # CRITICAL: Never whitelist suspicious PowerShell/cmd commands
+        if ('powershell' in name_lower or 'cmd' in name_lower or 'wmic' in name_lower):
+            if self._is_suspicious_command(cmdline or '', name):
+                return False  # Force analysis of suspicious shell commands
         
         # Check trusted processes
         for trusted in self.whitelist.get('trusted_processes', []):
             if name_lower == trusted.lower():
                 return True
         
-        # Check trusted paths (but allow PowerShell from System32 if command is suspicious)
+        # Check trusted paths
         if path:
             path_lower = path.lower()
-            # Don't whitelist PowerShell from System32 if it has suspicious parameters
-            # This allows detection of encoded PowerShell commands even from trusted paths
-            is_powershell = 'powershell' in name_lower
-            is_trusted_path = False
-            
             for trusted_path in self.whitelist.get('trusted_paths', []):
                 if path_lower.startswith(trusted_path.lower()):
-                    is_trusted_path = True
-                    break
-            
-            # If PowerShell from trusted path, still check command line before whitelisting
-            if is_trusted_path and is_powershell:
-                # Don't auto-whitelist - let it be analyzed for suspicious commands
-                return False
-            
-            if is_trusted_path:
-                return True
+                    # Even from trusted paths, don't whitelist suspicious commands
+                    if ('powershell' in name_lower or 'cmd' in name_lower):
+                        if self._is_suspicious_command(cmdline or '', name):
+                            return False
+                    return True
         
         return False
     
@@ -321,6 +357,7 @@ class RealtimeDetectionSystem:
         print("    [✔] StatsReporter started")
         
         print("\n[*] All systems operational!")
+        print("[*] Monitoring for suspicious PowerShell/cmd commands...")
         print("[*] Press Ctrl+C to stop\n")
         
         # Main loop
@@ -372,53 +409,39 @@ class RealtimeDetectionSystem:
                         # Get command line as string
                         cmdline = ' '.join(cmdline_raw) if cmdline_raw else ''
                         
-                        # Debug: Log PowerShell processes for troubleshooting
-                        if 'powershell' in name.lower():
-                            print(f"[DEBUG] New PowerShell process detected: PID={pid}, CmdLine={cmdline[:100] if cmdline else '(empty)'}")
-                        
-                        # Skip whitelisted processes (but PowerShell from System32 is handled specially)
-                        if self._is_whitelisted_process(name, exe_path):
-                            # Special case: PowerShell from System32 should still be checked if cmdline is suspicious
-                            if 'powershell' in name.lower() and cmdline:
-                                # Check if command line has suspicious patterns before skipping
-                                suspicious_keywords = ['-encodedcommand', '-enc', '-windowstyle', '-executionpolicy', 'bypass', 'hidden']
-                                if any(keyword.lower() in cmdline.lower() for keyword in suspicious_keywords):
-                                    # Don't skip - analyze it
-                                    pass
-                                else:
-                                    self.stats['false_positives_avoided'] += 1
-                                    continue
-                            else:
-                                self.stats['false_positives_avoided'] += 1
-                                continue
+                        # Check if whitelisted (this now includes suspicious command check)
+                        if self._is_whitelisted_process(name, exe_path, cmdline):
+                            self.stats['false_positives_avoided'] += 1
+                            continue
                         
                         # Skip system PIDs
                         if not self._should_scan_process(pid):
                             continue
                         
-                        # Analyze process (ensure cmdline is included)
+                        # Analyze process
                         try:
                             # Ensure cmdline is in process_info
                             proc_info = proc.info.copy()
                             proc_info['cmdline'] = cmdline  # Use the string version
                             
                             event = self.process_agent.analyze_process(proc_info)
-                            # Lower threshold to catch more suspicious processes (30 instead of 50)
-                            if event and event.suspicion_score >= 30:
+                            
+                            # Lower threshold for shell processes with suspicious commands
+                            threshold = 20 if self._is_suspicious_command(cmdline, name) else 30
+                            
+                            if event and event.suspicion_score >= threshold:
+                                # Log suspicious shells
+                                if 'powershell' in name.lower() or 'cmd' in name.lower():
+                                    print(f"[!] Suspicious shell detected: PID={pid}, Score={event.suspicion_score}, Cmd={cmdline[:100]}")
+                                
                                 self.process_events.put({
                                     'type': 'process',
                                     'event': event,
-                                    'timestamp': datetime.now()
+                                    'timestamp': datetime.now(),
+                                    'has_suspicious_command': self._is_suspicious_command(cmdline, name)
                                 })
                                 self.stats['processes_scanned'] += 1
-                                
-                                # Debug: Log when PowerShell is detected
-                                if 'powershell' in name.lower():
-                                    print(f"[DEBUG] PowerShell threat detected: PID={pid}, Score={event.suspicion_score}, CmdLine={cmdline[:100]}")
                         except Exception as e:
-                            # Debug: Print error for troubleshooting
-                            if 'powershell' in name.lower():
-                                print(f"[DEBUG] Error analyzing PowerShell process {pid}: {e}")
                             pass
                 
                 existing_pids = current_pids
@@ -444,7 +467,7 @@ class RealtimeDetectionSystem:
                     exe_path = proc.info.get('exe', '')
                     
                     # Skip whitelisted
-                    if self._is_whitelisted_process(name, exe_path):
+                    if self._is_whitelisted_process(name, exe_path, None):
                         self.stats['false_positives_avoided'] += 1
                         continue
                     
@@ -503,6 +526,7 @@ class RealtimeDetectionSystem:
             features = None
             process_name = ''
             process_path = ''
+            has_suspicious_command = event_data.get('has_suspicious_command', False)
             
             # Extract features based on event type
             if event_data['type'] == 'process':
@@ -536,17 +560,26 @@ class RealtimeDetectionSystem:
                 # Context-aware scoring adjustment
                 adjusted_score = result.threat_score
                 
-                # Reduce score for processes in trusted paths (might be false positive)
-                if process_path:
+                # CRITICAL FIX: Do NOT reduce score for suspicious PowerShell/cmd commands
+                # Only reduce score for benign processes from trusted paths
+                if process_path and not has_suspicious_command:
                     for trusted_path in self.whitelist.get('trusted_paths', []):
                         if process_path.lower().startswith(trusted_path.lower()):
-                            adjusted_score = adjusted_score * 0.7  # 30% reduction
+                            # Only reduce if NOT a suspicious shell command
+                            is_shell = 'powershell' in process_name.lower() or 'cmd' in process_name.lower()
+                            if not is_shell:
+                                adjusted_score = adjusted_score * 0.7  # 30% reduction
                             break
                 
                 # Apply thresholds from whitelist
                 thresholds = self.whitelist.get('thresholds', {})
                 ml_threshold = thresholds.get('ml_threshold', 0.70) * 100
                 confidence_threshold = thresholds.get('confidence_threshold', 0.75)
+                
+                # Lower thresholds for known suspicious commands
+                if has_suspicious_command:
+                    ml_threshold = ml_threshold * 0.7  # 30% lower threshold (70% -> 49%)
+                    confidence_threshold = confidence_threshold * 0.8  # 20% lower (75% -> 60%)
                 
                 # Only alert if BOTH thresholds met
                 if adjusted_score >= ml_threshold and result.confidence >= confidence_threshold:
@@ -664,7 +697,7 @@ class RealtimeDetectionSystem:
             print(f"Name: {proc.name}")
             print(f"Path: {proc.exe_path}")
             if proc.cmdline:
-                print(f"Command: {proc.cmdline[:100]}")
+                print(f"Command: {proc.cmdline[:200]}")
         else:
             print(f"Type: Memory Injection")
             print(f"PID: {event_data.get('pid', 'Unknown')}")
