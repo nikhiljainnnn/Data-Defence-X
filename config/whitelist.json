@@ -1,0 +1,117 @@
+{
+    "version": "1.0",
+    "last_updated": "2024-11-14",
+    "description": "Whitelist of trusted processes and paths to reduce false positives",
+    
+    "trusted_processes": [
+      "system",
+      "registry",
+      "smss.exe",
+      "csrss.exe",
+      "wininit.exe",
+      "services.exe",
+      "lsass.exe",
+      "svchost.exe",
+      "dwm.exe",
+      "winlogon.exe",
+      "fontdrvhost.exe",
+      "lsm.exe",
+      "explorer.exe",
+      "taskhostw.exe",
+      "searchindexer.exe",
+      "searchhost.exe",
+      "runtimebroker.exe",
+      "startmenuexperiencehost.exe",
+      "shellexperiencehost.exe",
+      "sihost.exe",
+      "ctfmon.exe",
+      "chrome.exe",
+      "firefox.exe",
+      "msedge.exe",
+      "iexplore.exe",
+      "opera.exe",
+      "brave.exe",
+      "telegram.exe",
+      "discord.exe",
+      "slack.exe",
+      "teams.exe",
+      "skype.exe",
+      "zoom.exe",
+      "code.exe",
+      "devenv.exe",
+      "rider64.exe",
+      "pycharm64.exe",
+      "intellij idea.exe",
+      "webstorm64.exe",
+      "sublime_text.exe",
+      "notepad++.exe",
+      "git.exe",
+      "node.exe",
+      "python.exe",
+      "pythonw.exe",
+      "dotnet.exe",
+      "msbuild.exe",
+      "java.exe",
+      "javaw.exe",
+      "lenovovantage.exe",
+      "lenovovantageservice.exe",
+      "fnhotkeyutility.exe",
+      "lenovo.modern.imcontroller.pluginhost.device.exe",
+      "lenovovantage-(lenovoservicebridgeaddin).exe",
+      "lenovovantage-(smartinteractaddin).exe",
+      "immersive.exe",
+      "vlc.exe",
+      "spotify.exe",
+      "wmplayer.exe",
+      "winword.exe",
+      "excel.exe",
+      "powerpnt.exe",
+      "outlook.exe",
+      "onenote.exe"
+    ],
+    
+    "trusted_paths": [
+      "C:\\Windows\\System32",
+      "C:\\Windows\\SysWOW64",
+      "C:\\Windows\\SystemApps",
+      "C:\\Windows\\ImmersiveControlPanel",
+      "C:\\Program Files",
+      "C:\\Program Files (x86)",
+      "C:\\ProgramData\\Microsoft",
+      "C:\\Windows\\Microsoft.NET"
+    ],
+    
+    "trusted_publishers": [
+      "Microsoft Corporation",
+      "Microsoft Windows",
+      "Google LLC",
+      "Mozilla Corporation",
+      "Telegram FZ-LLC",
+      "Discord Inc.",
+      "JetBrains s.r.o.",
+      "Lenovo"
+    ],
+    
+    "scan_exclusions": [
+      0,
+      4
+    ],
+    
+    "thresholds": {
+      "ml_threshold": 0.70,
+      "confidence_threshold": 0.75,
+      "yara_critical_threshold": 3
+    },
+    
+    "rate_limiting": {
+      "scan_cooldown_seconds": 300,
+      "max_scans_per_process": 10
+    },
+    
+    "advanced_settings": {
+      "check_digital_signature": true,
+      "verify_publisher": true,
+      "analyze_parent_process": true,
+      "context_aware_scoring": true
+    }
+}
