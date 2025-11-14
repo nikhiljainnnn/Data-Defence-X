@@ -1,6 +1,6 @@
 """
-Process Monitor Agent for DataDefenceX
-Monitors process creation and behavior
+Process Monitor Agent for DataDefenceX - FINAL FIXED
+PowerShell/cmd REMOVED from whitelist to enable detection
 """
 import psutil
 import os
@@ -30,9 +30,10 @@ class ProcessEvent:
 
 
 # Whitelist of legitimate system and common processes
+# CRITICAL FIX: PowerShell and cmd REMOVED to enable suspicious command detection
 WHITELIST_PROCESSES = {
     'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe',
-    'code.exe', 'python.exe', 'powershell.exe', 'cmd.exe',
+    'code.exe', 'python.exe',  # REMOVED: 'powershell.exe', 'cmd.exe'
     'conhost.exe', 'csrss.exe', 'explorer.exe', 'dwm.exe',
     'svchost.exe', 'lsass.exe', 'wininit.exe', 'services.exe',
     'spoolsv.exe', 'rundll32.exe', 'dllhost.exe', 'taskhostw.exe',
@@ -68,13 +69,14 @@ TRUSTED_PATHS = {
 
 # Suspicious patterns in command lines (case-insensitive matching)
 SUSPICIOUS_PATTERNS = [
-    r'powershell.*-encodedcommand',  # Matches -EncodedCommand, -encodedcommand, etc.
-    r'powershell.*-enc\s',  # Matches -enc followed by space (short form)
-    r'powershell.*-windowstyle\s+hidden',  # Hidden window
-    r'powershell.*-executionpolicy\s+bypass',  # Bypass execution policy
-    r'powershell.*-noprofile',  # No profile
-    r'powershell.*-noninteractive',  # Non-interactive
-    r'cmd.*\/c.*powershell',  # CMD launching PowerShell
+    r'powershell.*-encodedcommand',
+    r'powershell.*-enc\s',
+    r'powershell.*-e\s',  # Short form
+    r'powershell.*-windowstyle\s+hidden',
+    r'powershell.*-executionpolicy\s+bypass',
+    r'powershell.*-noprofile',
+    r'powershell.*-noninteractive',
+    r'cmd.*\/c.*powershell',
     r'cmd.*\/c.*base64',
     r'rundll32.*\.dll',
     r'regsvcs.*\.exe',
@@ -89,8 +91,12 @@ SUSPICIOUS_PATTERNS = [
     r'wget.*http',
     r'python.*-c.*import',
     r'script.*-executionpolicy.*bypass',
-    r'iex\s*\(',  # Invoke-Expression
-    r'downloadstring',  # DownloadString method
+    r'iex\s*\(',
+    r'downloadstring',
+    r'invoke-expression',
+    r'invoke-webrequest',
+    r'webclient',
+    r'bitstransfer',
 ]
 
 
@@ -100,102 +106,51 @@ class ProcessMonitorAgent:
     Detects suspicious process activities
     """
     
-    def __init__(self, history_size: int = 1000, yara_scanner=None):
-        self.running = False
-        self.process_history = deque(maxlen=history_size)
-        self.monitored_pids = set()
-        self.previous_pids = set()
-        # Use provided YARA scanner or create new one
+    def __init__(self, yara_scanner: Optional[YARAScanner] = None):
+        """
+        Initialize the process monitor
+        
+        Args:
+            yara_scanner: Optional shared YARA scanner instance
+        """
+        # YARA scanner for command line analysis
         self.yara_scanner = yara_scanner if yara_scanner else YARAScanner()
-    
-    def calculate_entropy(self, data: str) -> float:
-        """Calculate Shannon entropy of a string"""
-        if not data or len(data) == 0:
-            return 0.0
         
-        try:
-            # Count frequency of each character
-            char_freq = {}
-            for char in data:
-                char_freq[char] = char_freq.get(char, 0) + 1
-            
-            # Calculate entropy
-            entropy = 0.0
-            data_len = float(len(data))
-            
-            for count in char_freq.values():
-                if count > 0:
-                    p = float(count) / data_len
-                    entropy -= p * math.log2(p)
-            
-            return entropy
+        # Track recent processes for behavior analysis
+        self.process_history = deque(maxlen=1000)
+        self.parent_child_map = {}
         
-        except Exception as e:
-            print(f"[DEBUG] Error calculating entropy: {e}")
-            return 0.0
-    
-    def is_base64_encoded(self, data: str) -> bool:
-        """Check if string contains base64-encoded data"""
-        try:
-            if not data or len(data) < 20:
-                return False
-            
-            # Remove common separators
-            cleaned = data.replace(' ', '').replace('\n', '').replace('\r', '')
-            
-            # Base64 regex pattern
-            base64_pattern = r'^[A-Za-z0-9+/]{20,}={0,2}$'
-            
-            # Check for large base64 chunks
-            for chunk in re.findall(r'[A-Za-z0-9+/]{30,}={0,2}', cleaned):
-                if re.match(base64_pattern, chunk):
-                    return True
-            
-            return False
-        
-        except Exception as e:
-            return False
-    
-    def check_suspicious_patterns(self, cmdline: str) -> List[str]:
-        """Check for known suspicious command line patterns"""
-        indicators = []
-        
-        if not cmdline or len(cmdline) == 0:
-            return indicators
-        
-        try:
-            cmdline_lower = str(cmdline).lower()
-            
-            for pattern in SUSPICIOUS_PATTERNS:
-                try:
-                    if re.search(pattern, cmdline_lower, re.IGNORECASE):
-                        indicators.append(f"Matches pattern: {pattern}")
-                except Exception:
-                    pass
-        
-        except Exception as e:
-            pass
-        
-        return indicators
+        print("[*] Process Monitor initialized")
+        print(f"[*] PowerShell/cmd NOT in whitelist - will analyze all commands")
     
     def get_process_info(self, pid: int) -> Optional[Dict]:
-        """Get detailed information about a process"""
+        """
+        Get detailed information about a process
+        
+        Args:
+            pid: Process ID
+            
+        Returns:
+            Dictionary with process information or None if not found
+        """
         try:
             proc = psutil.Process(pid)
             
-            # Get basic info
-            name = proc.name()
+            # Get process name
+            try:
+                name = proc.name()
+            except Exception:
+                name = ''
             
-            # Get command line - try multiple methods for better capture
+            # Get command line (try multiple methods)
             cmdline = ''
             try:
-                # Method 1: Try cmdline() first (most reliable)
-                cmdline_parts = proc.cmdline()
-                if cmdline_parts:
-                    cmdline = ' '.join(cmdline_parts)
+                cmdline_list = proc.cmdline()
+                if cmdline_list:
+                    cmdline = ' '.join(cmdline_list)
             except Exception:
+                # Fallback to WMIC if psutil fails
                 try:
-                    # Method 2: Try wmic as fallback (Windows only)
                     import subprocess
                     result = subprocess.run(
                         ['wmic', 'process', 'where', f'ProcessId={pid}', 'get', 'CommandLine', '/format:list'],
@@ -237,7 +192,10 @@ class ProcessMonitorAgent:
             return None
     
     def is_whitelisted(self, process_info: Dict) -> bool:
-        """Check if process is whitelisted"""
+        """
+        Check if process is whitelisted
+        CRITICAL: PowerShell/cmd are NOT in whitelist
+        """
         try:
             name = str(process_info['name']).lower()
             exe_path = str(process_info['exe_path']).lower()
@@ -247,6 +205,10 @@ class ProcessMonitorAgent:
                 return True
             
             # Check if running from trusted path
+            # BUT: Never whitelist PowerShell/cmd even from trusted paths
+            if 'powershell' in name or 'cmd' in name or 'wmic' in name:
+                return False  # Always analyze shell commands
+            
             for trusted_path in TRUSTED_PATHS:
                 if exe_path.startswith(trusted_path.lower()):
                     # Still check for suspicious cmdline
@@ -258,6 +220,52 @@ class ProcessMonitorAgent:
         except Exception:
             return False
     
+    def check_suspicious_patterns(self, cmdline: str) -> List[str]:
+        """
+        Check for suspicious patterns in command line
+        
+        Args:
+            cmdline: Command line string
+            
+        Returns:
+            List of matched patterns
+        """
+        matches = []
+        
+        if not cmdline:
+            return matches
+        
+        cmdline_lower = cmdline.lower()
+        
+        for pattern in SUSPICIOUS_PATTERNS:
+            try:
+                if re.search(pattern, cmdline_lower, re.IGNORECASE):
+                    matches.append(pattern)
+            except re.error:
+                continue
+        
+        return matches
+    
+    def is_base64_encoded(self, text: str) -> bool:
+        """Check if text contains base64-encoded content"""
+        if not text or len(text) < 50:
+            return False
+        
+        # Look for long base64 strings (50+ chars)
+        base64_pattern = r'[A-Za-z0-9+/]{50,}={0,2}'
+        matches = re.findall(base64_pattern, text)
+        
+        if matches:
+            # Verify it's valid base64
+            for match in matches:
+                try:
+                    base64.b64decode(match)
+                    return True
+                except Exception:
+                    continue
+        
+        return False
+    
     def calculate_suspicion_score(self, process_info: Dict) -> Tuple[int, List[str]]:
         """Calculate suspicion score for a process (0-100)"""
         score = 0
@@ -268,308 +276,129 @@ class ProcessMonitorAgent:
             cmdline_str = str(process_info.get('cmdline', '')).lower()
             exe_path = str(process_info.get('exe_path', '')).lower()
             
-            # Check if whitelisted
-            if self.is_whitelisted(process_info):
-                # Debug for PowerShell
-                if 'powershell' in name:
-                    print(f"[DEBUG] PowerShell process whitelisted in calculate_suspicion_score, skipping: {name}")
-                return 0, []
-            
-            # Check for suspicious command line patterns
+            # CRITICAL: Never skip analysis for PowerShell/cmd
+            # Check for suspicious command line patterns FIRST
             pattern_matches = self.check_suspicious_patterns(cmdline_str)
             if pattern_matches:
                 # Higher score for encoded commands (very suspicious)
-                if any('encodedcommand' in p.lower() or '-enc' in p.lower() for p in pattern_matches):
-                    score += 60  # High score for encoded commands
+                if any('encodedcommand' in p.lower() or '-enc' in p.lower() or '-e ' in p.lower() 
+                       for p in pattern_matches):
+                    score += 70  # INCREASED: Very high score for encoded commands
+                    indicators.append("Encoded PowerShell command detected")
                 else:
-                    score += 40
-                indicators.extend(pattern_matches)
+                    score += 50
+                indicators.extend([f"Suspicious pattern: {p}" for p in pattern_matches[:3]])
             
-            # Also check for base64 patterns in command line (even if no other patterns match)
-            if not pattern_matches and self.is_base64_encoded(cmdline_str):
-                # Long base64 strings in command line are suspicious
-                if len(cmdline_str) > 50:  # Only flag substantial base64
-                    score += 30
-                    indicators.append("Contains Base64-encoded data in command line")
+            # Check for base64 patterns in command line
+            if self.is_base64_encoded(cmdline_str):
+                score += 30
+                indicators.append("Base64-encoded content in command line")
             
-            # High entropy analysis (adjusted threshold)
-            try:
-                entropy = self.calculate_entropy(cmdline_str)
-                if entropy > 5.5:  # Raised threshold from 5.0
+            # Check if PowerShell/cmd
+            if 'powershell' in name or 'cmd' in name:
+                score += 15  # Base score for shell processes
+                indicators.append(f"Shell process: {name}")
+                
+                # Additional checks for PowerShell/cmd
+                if '-windowstyle' in cmdline_str and 'hidden' in cmdline_str:
                     score += 25
-                    indicators.append(f"High cmdline entropy: {entropy:.2f}")
-            except Exception:
-                pass
-            
-            # Base64 encoding detection (only if other indicators present)
-            if score > 0 and self.is_base64_encoded(cmdline_str):
-                score += 20
-                indicators.append("Contains Base64-encoded data")
-            
-            # YARA signature scanning on command line
-            try:
-                yara_matches = self.yara_scanner.scan_command_line(cmdline_str)
-                if yara_matches:
-                    # Count by severity
-                    critical_count = sum(1 for m in yara_matches if m.severity == 'critical')
-                    high_count = sum(1 for m in yara_matches if m.severity == 'high')
-                    
-                    if critical_count > 0:
-                        score += 50
-                        indicators.append(f"YARA: {critical_count} critical signature(s) matched")
-                    elif high_count > 0:
-                        score += 35
-                        indicators.append(f"YARA: {high_count} high-severity signature(s) matched")
-                    else:
-                        score += 20
-                        indicators.append(f"YARA: {len(yara_matches)} signature(s) matched")
-                    
-                    # Add rule names to indicators (show top 3)
-                    for match in yara_matches[:3]:
-                        indicators.append(f"  - {match.rule_name}: {match.description}")
-            except Exception as e:
-                pass  # YARA scanning failed, continue without it
-            
-            # Suspicious parent process
-            try:
-                parent_pid = process_info.get('parent_pid')
-                if parent_pid:
-                    try:
-                        parent = psutil.Process(parent_pid)
-                        parent_name = str(parent.name()).lower()
-                        
-                        suspicious_parents = {'explorer.exe', 'cmd.exe', 'powershell.exe', 
-                                             'svchost.exe', 'rundll32.exe', 'mshta.exe'}
-                        if parent_name in suspicious_parents and score > 20:
-                            score += 15
-                            indicators.append(f"Suspicious parent: {parent_name}")
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-            except Exception:
-                pass
-            
-            # Temp/suspicious directory execution
-            try:
-                if 'temp' in exe_path or 'appdata' in exe_path:
-                    if 'windows\\temp' not in exe_path:  # Exclude system temp
-                        score += 30
-                        indicators.append("Suspicious location: Running from Temp/AppData folder")
-            except Exception:
-                pass
-            
-            # ProgramData execution (sometimes suspicious)
-            try:
-                if 'programdata' in exe_path:
+                    indicators.append("Hidden window mode")
+                
+                if 'bypass' in cmdline_str:
+                    score += 25
+                    indicators.append("Execution policy bypass")
+                
+                if '-noprofile' in cmdline_str or '-noninteractive' in cmdline_str:
                     score += 15
-                    indicators.append("Suspicious location: Running from ProgramData")
-            except Exception:
-                pass
+                    indicators.append("Non-interactive mode")
             
-            # Obfuscated/random names
-            try:
-                if len(name) > 15 or name.count('_') > 3 or name.count('-') > 3:
-                    if not any(legit in name for legit in ['codeset', 'installer', 'update']):
-                        score += 10
-                        indicators.append("Suspicious process name pattern")
-            except Exception:
-                pass
+            # Check for suspicious parent processes
+            parent_pid = process_info.get('parent_pid')
+            if parent_pid:
+                try:
+                    parent_proc = psutil.Process(parent_pid)
+                    parent_name = parent_proc.name().lower()
+                    
+                    # Suspicious parent combinations
+                    if name in ['powershell.exe', 'cmd.exe']:
+                        if parent_name in ['explorer.exe', 'winword.exe', 'excel.exe']:
+                            score += 20
+                            indicators.append(f"Suspicious parent: {parent_name}")
+                except:
+                    pass
             
-            return min(score, 100), indicators
+            # Check for suspicious paths
+            suspicious_path_keywords = ['temp', 'appdata', 'downloads', 'public']
+            if any(keyword in exe_path for keyword in suspicious_path_keywords):
+                score += 15
+                indicators.append("Running from suspicious location")
+            
+            # Use YARA to scan command line
+            if self.yara_scanner and cmdline_str:
+                try:
+                    yara_matches = self.yara_scanner.scan_command_line(
+                        process_info.get('cmdline', ''),
+                        process_info
+                    )
+                    
+                    if yara_matches:
+                        yara_score = len(yara_matches) * 15
+                        score += yara_score
+                        indicators.extend([f"YARA: {m.rule_name}" for m in yara_matches[:2]])
+                except Exception:
+                    pass
+            
+            # Cap score at 100
+            score = min(score, 100)
+            
+            # Debug output for PowerShell
+            if 'powershell' in name:
+                print(f"[DEBUG] PowerShell score calculation: PID={process_info['pid']}, Score={score}, Indicators={len(indicators)}")
+            
+            return score, indicators
         
         except Exception as e:
-            print(f"[DEBUG] Error in calculate_suspicion_score: {e}")
+            print(f"[!] Error calculating suspicion score: {e}")
             return 0, []
-    
-    def scan_running_processes(self) -> List[ProcessEvent]:
-        """Scan all currently running processes"""
-        events = []
-        current_pids = set()
-        
-        try:
-            for proc in psutil.process_iter(['pid', 'name']):
-                try:
-                    pid = proc.info['pid']
-                    current_pids.add(pid)
-                    
-                    process_info = self.get_process_info(pid)
-                    if not process_info:
-                        continue
-                    
-                    # Calculate suspicion
-                    score, indicators = self.calculate_suspicion_score(process_info)
-                    
-                    # Only report suspicious processes
-                    if score >= 70:  # Raised threshold to reduce false positives
-                        event = ProcessEvent(
-                            timestamp=datetime.now(),
-                            event_type='suspicious',
-                            pid=pid,
-                            name=process_info['name'],
-                            cmdline=process_info['cmdline'],
-                            parent_pid=process_info['parent_pid'],
-                            exe_path=process_info['exe_path'],
-                            suspicious_indicators=indicators,
-                            suspicion_score=score
-                        )
-                        events.append(event)
-                        self.process_history.append(event)
-                
-                except Exception:
-                    pass
-        
-        except Exception as e:
-            print(f"[!] Error scanning processes: {e}")
-        
-        return events
-    
-    def detect_new_processes(self) -> List[ProcessEvent]:
-        """Detect newly created processes"""
-        events = []
-        current_pids = set()
-        
-        try:
-            for proc in psutil.process_iter(['pid']):
-                try:
-                    pid = proc.info['pid']
-                    current_pids.add(pid)
-                    
-                    # Check if this is a new process
-                    if pid not in self.previous_pids:
-                        process_info = self.get_process_info(pid)
-                        if not process_info:
-                            continue
-                        
-                        score, indicators = self.calculate_suspicion_score(process_info)
-                        
-                        # Report suspicious new processes
-                        if score >= 70:
-                            event = ProcessEvent(
-                                timestamp=datetime.now(),
-                                event_type='created',
-                                pid=pid,
-                                name=process_info['name'],
-                                cmdline=process_info['cmdline'],
-                                parent_pid=process_info['parent_pid'],
-                                exe_path=process_info['exe_path'],
-                                suspicious_indicators=indicators,
-                                suspicion_score=score
-                            )
-                            events.append(event)
-                            self.process_history.append(event)
-                
-                except Exception:
-                    pass
-            
-            self.previous_pids = current_pids
-        
-        except Exception as e:
-            print(f"[!] Error detecting new processes: {e}")
-        
-        return events
     
     def analyze_process(self, process_info: Dict) -> Optional[ProcessEvent]:
         """
-        Analyze a process and return ProcessEvent if suspicious
+        Analyze a process and return a ProcessEvent if suspicious
         
         Args:
-            process_info: Dict with 'pid', 'ppid', 'name', 'cmdline' from psutil
-        
+            process_info: Dictionary with process information
+            
         Returns:
             ProcessEvent if suspicious, None otherwise
         """
         try:
-            pid = process_info.get('pid')
-            if not pid:
+            # Skip if whitelisted (PowerShell/cmd are NOT whitelisted)
+            if self.is_whitelisted(process_info):
                 return None
-            
-            # Get detailed process info
-            detailed_info = self.get_process_info(pid)
-            if not detailed_info:
-                return None
-            
-            # PRIORITY: Use cmdline from process_info if available (more reliable for new processes)
-            # This is critical because get_process_info() might not capture the full command line
-            # for newly created processes, especially PowerShell with encoded commands
-            if process_info.get('cmdline'):
-                if isinstance(process_info['cmdline'], list):
-                    cmdline_from_info = ' '.join(process_info['cmdline'])
-                else:
-                    cmdline_from_info = str(process_info['cmdline'])
-                
-                # Only use get_process_info cmdline if process_info cmdline is empty
-                if cmdline_from_info and len(cmdline_from_info.strip()) > 0:
-                    detailed_info['cmdline'] = cmdline_from_info
-                # Otherwise keep the one from get_process_info (might be empty, but that's OK)
-            
-            # Debug: Log cmdline being analyzed (for PowerShell)
-            if 'powershell' in detailed_info.get('name', '').lower():
-                print(f"[DEBUG] Analyzing cmdline: {detailed_info.get('cmdline', '(empty)')[:200]}")
             
             # Calculate suspicion score
-            score, indicators = self.calculate_suspicion_score(detailed_info)
+            suspicion_score, indicators = self.calculate_suspicion_score(process_info)
             
-            # Debug: Log score calculation (for PowerShell)
-            if 'powershell' in detailed_info.get('name', '').lower():
-                print(f"[DEBUG] Suspicion score calculated: {score}, Indicators count: {len(indicators)}")
-                if indicators:
-                    print(f"[DEBUG] Top indicators: {indicators[:3]}")
-            
-            # Only return event if suspicious (lower threshold for better detection)
-            if score >= 30:  # Lowered from 50 to catch more suspicious processes
-                return ProcessEvent(
+            # Create event if suspicious
+            if suspicion_score > 0:
+                event = ProcessEvent(
                     timestamp=datetime.now(),
-                    event_type='created',
-                    pid=pid,
-                    name=detailed_info['name'],
-                    cmdline=detailed_info['cmdline'],
-                    parent_pid=detailed_info.get('parent_pid'),
-                    exe_path=detailed_info['exe_path'],
+                    event_type='suspicious',
+                    pid=process_info['pid'],
+                    name=process_info['name'],
+                    cmdline=process_info['cmdline'],
+                    parent_pid=process_info.get('parent_pid'),
+                    exe_path=process_info['exe_path'],
                     suspicious_indicators=indicators,
-                    suspicion_score=score
+                    suspicion_score=suspicion_score
                 )
+                
+                return event
             
             return None
         
         except Exception as e:
-            return None
-    
-    def get_process_tree(self, pid: int) -> Optional[Dict]:
-        """Get process tree for a given PID"""
-        try:
-            proc = psutil.Process(pid)
-            
-            try:
-                cmdline = ' '.join(proc.cmdline()) if proc.cmdline() else ''
-            except Exception:
-                cmdline = ''
-            
-            tree = {
-                'pid': pid,
-                'name': proc.name(),
-                'cmdline': cmdline,
-                'children': []
-            }
-            
-            try:
-                for child in proc.children(recursive=True):
-                    try:
-                        child_cmdline = ' '.join(child.cmdline()) if child.cmdline() else ''
-                    except Exception:
-                        child_cmdline = ''
-                    
-                    tree['children'].append({
-                        'pid': child.pid,
-                        'name': child.name(),
-                        'cmdline': child_cmdline
-                    })
-            except Exception:
-                pass
-            
-            return tree
-        
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return None
-        except Exception:
+            print(f"[!] Error analyzing process: {e}")
             return None
 
 
@@ -577,40 +406,64 @@ def test_process_monitor():
     """Test the process monitor"""
     print("\n=== DataDefenceX Process Monitor Test ===\n")
     
-    agent = ProcessMonitorAgent()
+    monitor = ProcessMonitorAgent()
     
-    print("[*] Analyzing currently running processes...\n")
+    # Test 1: Check if PowerShell is NOT whitelisted
+    print("[*] Test 1: PowerShell Whitelist Status")
+    test_process = {
+        'pid': 1234,
+        'name': 'powershell.exe',
+        'cmdline': 'powershell.exe -Command "Get-Process"',
+        'exe_path': 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        'parent_pid': 5678
+    }
     
-    events = agent.scan_running_processes()
-    
-    if events:
-        print(f"[!] Found {len(events)} suspicious processes:\n")
-        for event in sorted(events, key=lambda x: x.suspicion_score, reverse=True):
-            print(f"[!] Suspicious: {event.name} (Score: {event.suspicion_score})")
-            for indicator in event.suspicious_indicators:
-                print(f"    - {indicator}")
+    is_whitelisted = monitor.is_whitelisted(test_process)
+    print(f"    PowerShell whitelisted: {is_whitelisted}")
+    if not is_whitelisted:
+        print("    [✓] CORRECT - PowerShell will be analyzed")
     else:
-        print("[+] No highly suspicious processes detected!")
+        print("    [✗] WRONG - PowerShell should NOT be whitelisted")
     
-    print("\n[*] Starting real-time monitoring (Ctrl+C to stop)...")
-    print("[*] Waiting for new process creations...\n")
+    # Test 2: Encoded PowerShell command
+    print("\n[*] Test 2: Encoded PowerShell Detection")
+    encoded_process = {
+        'pid': 1234,
+        'name': 'powershell.exe',
+        'cmdline': 'powershell.exe -WindowStyle Hidden -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgACIAVABlAHMAdAAi',
+        'exe_path': 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        'parent_pid': 5678
+    }
     
-    try:
-        import time
-        while True:
-            new_events = agent.detect_new_processes()
-            if new_events:
-                for event in new_events:
-                    print(f"\n[!] NEW PROCESS DETECTED: {event.name} (PID: {event.pid})")
-                    print(f"    Score: {event.suspicion_score}")
-                    print(f"    Command: {event.cmdline[:100]}")
-                    for indicator in event.suspicious_indicators:
-                        print(f"    - {indicator}")
-            
-            time.sleep(2)
+    score, indicators = monitor.calculate_suspicion_score(encoded_process)
+    print(f"    Suspicion Score: {score}/100")
+    print(f"    Indicators: {len(indicators)}")
+    for indicator in indicators[:3]:
+        print(f"      - {indicator}")
     
-    except KeyboardInterrupt:
-        print("\n\n[*] Monitoring stopped.")
+    if score >= 70:
+        print("    [✓] HIGH SCORE - Would be detected")
+    else:
+        print(f"    [✗] LOW SCORE - May not be detected (threshold: 70)")
+    
+    # Test 3: Normal PowerShell command
+    print("\n[*] Test 3: Normal PowerShell Command")
+    normal_process = {
+        'pid': 1234,
+        'name': 'powershell.exe',
+        'cmdline': 'powershell.exe -Command "Get-Process | Select-Object -First 5"',
+        'exe_path': 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        'parent_pid': 5678
+    }
+    
+    score, indicators = monitor.calculate_suspicion_score(normal_process)
+    print(f"    Suspicion Score: {score}/100")
+    print(f"    Indicators: {len(indicators)}")
+    
+    if score < 30:
+        print("    [✓] LOW SCORE - Would not trigger alert")
+    else:
+        print(f"    [!] SCORE TOO HIGH for normal command")
 
 
 if __name__ == "__main__":
