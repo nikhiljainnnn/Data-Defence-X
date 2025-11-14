@@ -367,19 +367,42 @@ class RealtimeDetectionSystem:
                     if pid not in existing_pids:
                         name = proc.info.get('name', '')
                         exe_path = proc.info.get('exe', '')
+                        cmdline_raw = proc.info.get('cmdline', [])
                         
-                        # Skip whitelisted processes
+                        # Get command line as string
+                        cmdline = ' '.join(cmdline_raw) if cmdline_raw else ''
+                        
+                        # Debug: Log PowerShell processes for troubleshooting
+                        if 'powershell' in name.lower():
+                            print(f"[DEBUG] New PowerShell process detected: PID={pid}, CmdLine={cmdline[:100] if cmdline else '(empty)'}")
+                        
+                        # Skip whitelisted processes (but PowerShell from System32 is handled specially)
                         if self._is_whitelisted_process(name, exe_path):
-                            self.stats['false_positives_avoided'] += 1
-                            continue
+                            # Special case: PowerShell from System32 should still be checked if cmdline is suspicious
+                            if 'powershell' in name.lower() and cmdline:
+                                # Check if command line has suspicious patterns before skipping
+                                suspicious_keywords = ['-encodedcommand', '-enc', '-windowstyle', '-executionpolicy', 'bypass', 'hidden']
+                                if any(keyword.lower() in cmdline.lower() for keyword in suspicious_keywords):
+                                    # Don't skip - analyze it
+                                    pass
+                                else:
+                                    self.stats['false_positives_avoided'] += 1
+                                    continue
+                            else:
+                                self.stats['false_positives_avoided'] += 1
+                                continue
                         
                         # Skip system PIDs
                         if not self._should_scan_process(pid):
                             continue
                         
-                        # Analyze process
+                        # Analyze process (ensure cmdline is included)
                         try:
-                            event = self.process_agent.analyze_process(proc.info)
+                            # Ensure cmdline is in process_info
+                            proc_info = proc.info.copy()
+                            proc_info['cmdline'] = cmdline  # Use the string version
+                            
+                            event = self.process_agent.analyze_process(proc_info)
                             # Lower threshold to catch more suspicious processes (30 instead of 50)
                             if event and event.suspicion_score >= 30:
                                 self.process_events.put({
@@ -388,8 +411,14 @@ class RealtimeDetectionSystem:
                                     'timestamp': datetime.now()
                                 })
                                 self.stats['processes_scanned'] += 1
+                                
+                                # Debug: Log when PowerShell is detected
+                                if 'powershell' in name.lower():
+                                    print(f"[DEBUG] PowerShell threat detected: PID={pid}, Score={event.suspicion_score}, CmdLine={cmdline[:100]}")
                         except Exception as e:
-                            # Debug: Print error if needed (can be removed later)
+                            # Debug: Print error for troubleshooting
+                            if 'powershell' in name.lower():
+                                print(f"[DEBUG] Error analyzing PowerShell process {pid}: {e}")
                             pass
                 
                 existing_pids = current_pids
