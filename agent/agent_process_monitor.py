@@ -469,7 +469,7 @@ class ProcessMonitorAgent:
         Analyze a process and return ProcessEvent if suspicious
         
         Args:
-            process_info: Dict with 'pid', 'ppid', 'name' from psutil
+            process_info: Dict with 'pid', 'ppid', 'name', 'cmdline' from psutil
         
         Returns:
             ProcessEvent if suspicious, None otherwise
@@ -483,6 +483,13 @@ class ProcessMonitorAgent:
             detailed_info = self.get_process_info(pid)
             if not detailed_info:
                 return None
+            
+            # Use cmdline from process_info if available (more reliable for new processes)
+            if process_info.get('cmdline'):
+                if isinstance(process_info['cmdline'], list):
+                    detailed_info['cmdline'] = ' '.join(process_info['cmdline'])
+                else:
+                    detailed_info['cmdline'] = str(process_info['cmdline'])
             
             # Calculate suspicion score
             score, indicators = self.calculate_suspicion_score(detailed_info)
