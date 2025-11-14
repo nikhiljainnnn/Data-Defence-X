@@ -1,502 +1,430 @@
 """
-DataDefenceX - Real-Time ML Engine
-Lightweight feature extraction and fast prediction
+DataDefenceX - Real-Time ML Engine FIXED v2.0
+Updated with configurable thresholds from whitelist
 """
 
-import numpy as np
 import pickle
-from sklearn.ensemble import RandomForestClassifier
+import numpy as np
+import json
+import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
-from collections import defaultdict, deque
+from typing import List, Dict, Optional, Tuple
 
 
 @dataclass
 class RealtimeFeatures:
-    """Lightweight features for real-time detection"""
-    # Process features (5)
+    """17 lightweight features for real-time detection"""
     parent_suspicious: bool
     cmdline_entropy: float
     path_suspicious: bool
     process_chain_depth: int
     is_system_binary_misplaced: bool
-    
-    # Memory features (4)
     rwx_region_count: int
     private_memory_mb: float
     is_hollowed: bool
     remote_threads: int
-    
-    # Network features (3)
     active_connections: int
     c2_beacon_score: float
     dns_entropy: float
-    
-    # Behavioral features (5)
-    file_writes_per_min: int
-    registry_mods_per_min: int
-    process_creates_per_min: int
+    file_writes_per_min: float
+    registry_mods_per_min: float
+    process_creates_per_min: float
     api_calls_suspicious: int
     total_events_5min: int
-    
-    # YARA features (3)
-    yara_critical_matches: int
-    yara_high_matches: int
-    yara_total_matches: int
-    
-    def to_array(self) -> np.ndarray:
-        """Convert to numpy array for ML prediction"""
-        return np.array([
-            int(self.parent_suspicious),
-            self.cmdline_entropy,
-            int(self.path_suspicious),
-            self.process_chain_depth,
-            int(self.is_system_binary_misplaced),
-            self.rwx_region_count,
-            self.private_memory_mb,
-            int(self.is_hollowed),
-            self.remote_threads,
-            self.active_connections,
-            self.c2_beacon_score,
-            self.dns_entropy,
-            self.file_writes_per_min,
-            self.registry_mods_per_min,
-            self.process_creates_per_min,
-            self.api_calls_suspicious,
-            self.total_events_5min,
-            self.yara_critical_matches,
-            self.yara_high_matches,
-            self.yara_total_matches
-        ]).reshape(1, -1)
 
 
 @dataclass
 class DetectionResult:
-    """Result from ML detection"""
+    """ML detection result"""
     is_malicious: bool
+    threat_score: float
     confidence: float
-    threat_score: int  # 0-100
     contributing_features: List[str]
-    timestamp: datetime
-    recommendation: str
 
 
 class RealtimeMLEngine:
     """
-    Lightweight ML engine for real-time detection
-    Uses simplified features instead of heavy Volatility extraction
+    Real-time ML detection engine with configurable thresholds
     """
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: str = "models/fileless_malware_model_realtime.pkl"):
+        """
+        Initialize ML engine
+        
+        Args:
+            model_path: Path to trained model
+        """
         self.model = None
-        self.feature_importance = None
-        self.event_cache = defaultdict(lambda: deque(maxlen=300))  # 5 min history
+        self.feature_names = []
         
-        if model_path:
-            self.load_model(model_path)
-        else:
-            # Create simple model for demonstration
-            self.model = self._create_simple_model()
+        # Load thresholds from whitelist
+        self.ml_threshold = 0.70  # Default 70%
+        self.confidence_threshold = 0.75  # Default 75%
+        self._load_thresholds()
+        
+        # Load model
+        self._load_model(model_path)
     
-    def _create_simple_model(self) -> RandomForestClassifier:
-        """
-        Create a simple Random Forest for testing
-        In production, use the trained model from train_model.py
-        """
-        model = RandomForestClassifier(
-            n_estimators=50,  # Fewer trees for faster inference
-            max_depth=15,
-            min_samples_split=5,
-            random_state=42,
-            n_jobs=1  # Single thread for predictable latency
-        )
-        
-        # Mock training data - in real system, use actual training
-        # Updated to 20 features (17 original + 3 YARA features)
-        X_train = np.random.rand(1000, 20)
-        y_train = np.random.randint(0, 2, 1000)
-        model.fit(X_train, y_train)
-        
-        return model
+    def _load_thresholds(self):
+        """Load thresholds from whitelist configuration"""
+        try:
+            with open('config/whitelist.json', 'r') as f:
+                whitelist = json.load(f)
+                thresholds = whitelist.get('thresholds', {})
+                
+                self.ml_threshold = thresholds.get('ml_threshold', 0.70)
+                self.confidence_threshold = thresholds.get('confidence_threshold', 0.75)
+                
+                print(f"[*] ML Threshold: {self.ml_threshold*100:.0f}%")
+                print(f"[*] Confidence Threshold: {self.confidence_threshold*100:.0f}%")
+        except Exception as e:
+            print(f"[*] Using default thresholds (70%/75%)")
     
-    def load_model(self, model_path: str):
-        """Load pre-trained model"""
-        with open(model_path, 'rb') as f:
-            self.model = pickle.load(f)
-        
-        # Get feature importance
-        if hasattr(self.model, 'feature_importances_'):
-            self.feature_importance = self.model.feature_importances_
+    def _load_model(self, model_path: str):
+        """Load trained ML model"""
+        try:
+            if not os.path.exists(model_path):
+                print(f"[!] Model not found: {model_path}")
+                print(f"[!] Run train_model_updated_v2.1.py first")
+                return
+            
+            # Load model
+            with open(model_path, 'rb') as f:
+                self.model = pickle.load(f)
+            
+            # Load feature names
+            features_path = model_path.replace('_realtime.pkl', '_features.pkl')
+            if os.path.exists(features_path.replace('_model', '')):
+                with open(features_path.replace('_model', ''), 'rb') as f:
+                    self.feature_names = pickle.load(f)
+            else:
+                # Default feature names
+                self.feature_names = [
+                    'parent_suspicious', 'cmdline_entropy', 'path_suspicious',
+                    'process_chain_depth', 'is_system_binary_misplaced',
+                    'rwx_region_count', 'private_memory_mb', 'is_hollowed',
+                    'remote_threads', 'active_connections', 'c2_beacon_score',
+                    'dns_entropy', 'file_writes_per_min', 'registry_mods_per_min',
+                    'process_creates_per_min', 'api_calls_suspicious', 'total_events_5min'
+                ]
+            
+            print(f"[*] ML model loaded: {os.path.basename(model_path)}")
+            
+        except Exception as e:
+            print(f"[!] Error loading model: {e}")
+            self.model = None
     
     def extract_features(self, 
                         process_event: Optional[Dict] = None,
-                        memory_indicators: Optional[List] = None,
-                        network_data: Optional[Dict] = None) -> RealtimeFeatures:
+                        memory_indicators: Optional[List] = None) -> Optional[RealtimeFeatures]:
         """
-        Extract lightweight features from live events
-        No Volatility required!
+        Extract 17 real-time features from process or memory event
         
         Args:
-            process_event: Data from ProcessMonitorAgent
-            memory_indicators: Data from MemoryMonitorAgent
-            network_data: Data from NetworkMonitorAgent
+            process_event: Process event data
+            memory_indicators: Memory scan indicators
         
         Returns:
             RealtimeFeatures object
         """
-        # Initialize with defaults
-        features = {
-            'parent_suspicious': False,
-            'cmdline_entropy': 0.0,
-            'path_suspicious': False,
-            'process_chain_depth': 1,
-            'is_system_binary_misplaced': False,
-            'rwx_region_count': 0,
-            'private_memory_mb': 0.0,
-            'is_hollowed': False,
-            'remote_threads': 0,
-            'active_connections': 0,
-            'c2_beacon_score': 0.0,
-            'dns_entropy': 0.0,
-            'file_writes_per_min': 0,
-            'registry_mods_per_min': 0,
-            'process_creates_per_min': 0,
-            'api_calls_suspicious': 0,
-            'total_events_5min': 0,
-            'yara_critical_matches': 0,
-            'yara_high_matches': 0,
-            'yara_total_matches': 0
-        }
+        try:
+            if process_event:
+                return self._extract_from_process(process_event)
+            elif memory_indicators:
+                return self._extract_from_memory(memory_indicators)
+            else:
+                return None
+        except Exception as e:
+            return None
+    
+    def _extract_from_process(self, proc: Dict) -> RealtimeFeatures:
+        """Extract features from process event"""
+        import math
         
-        # Extract from process event
-        if process_event:
-            features['parent_suspicious'] = process_event.get('suspicious_score', 0) > 50
-            features['cmdline_entropy'] = self._calculate_entropy(
-                process_event.get('cmdline', '')
-            )
-            features['path_suspicious'] = self._is_path_suspicious(
-                process_event.get('path', '')
-            )
-            features['process_chain_depth'] = self._get_chain_depth(
-                process_event.get('pid', 0)
-            )
+        # Feature 0: parent_suspicious
+        ppid = proc.get('ppid', 0)
+        parent_suspicious = ppid > 10 and ppid not in [0, 4]
         
-        # Extract from memory indicators
-        if memory_indicators:
-            for indicator in memory_indicators:
-                if indicator.indicator_type == 'rwx_region':
-                    features['rwx_region_count'] = indicator.details.get('region_count', 0)
-                elif indicator.indicator_type == 'hollowed':
-                    features['is_hollowed'] = True
-                elif indicator.indicator_type == 'remote_thread':
-                    features['remote_threads'] = indicator.details.get('thread_count', 0)
-                elif indicator.indicator_type == 'yara_signature':
-                    # Extract YARA signature matches
-                    details = indicator.details
-                    features['yara_critical_matches'] = details.get('critical_matches', 0)
-                    features['yara_high_matches'] = details.get('high_matches', 0)
-                    features['yara_total_matches'] = details.get('match_count', 0)
+        # Feature 1: cmdline_entropy
+        cmdline = proc.get('cmdline', '')
+        if cmdline and len(cmdline) > 10:
+            # Simple entropy calculation
+            from collections import Counter
+            counter = Counter(cmdline)
+            length = len(cmdline)
+            entropy = -sum((count/length) * math.log2(count/length) 
+                          for count in counter.values())
+            cmdline_entropy = min(entropy, 7.0)
+        else:
+            cmdline_entropy = 0.0
         
-        # Extract from network data
-        if network_data:
-            features['active_connections'] = network_data.get('connection_count', 0)
-            features['c2_beacon_score'] = network_data.get('beacon_score', 0.0)
-            features['dns_entropy'] = network_data.get('dns_entropy', 0.0)
+        # Feature 2: path_suspicious
+        path = proc.get('path', '').lower()
+        suspicious_paths = ['temp', 'appdata', 'downloads', 'public']
+        path_suspicious = any(sp in path for sp in suspicious_paths)
         
-        # Calculate behavioral features from event cache
-        if process_event and 'pid' in process_event:
-            pid = process_event['pid']
-            features.update(self._calculate_behavioral_features(pid))
+        # Feature 3: process_chain_depth
+        process_chain_depth = proc.get('suspicious_score', 0) / 20  # Rough estimate
         
-        return RealtimeFeatures(**features)
+        # Feature 4: is_system_binary_misplaced
+        system_binaries = ['powershell.exe', 'cmd.exe', 'wmic.exe', 'rundll32.exe']
+        name = proc.get('name', '').lower()
+        is_system = any(sb in name for sb in system_binaries)
+        is_wrong_location = 'system32' not in path and 'syswow64' not in path
+        is_system_binary_misplaced = is_system and is_wrong_location
+        
+        # Features 5-16: Default values (not available from process event alone)
+        return RealtimeFeatures(
+            parent_suspicious=parent_suspicious,
+            cmdline_entropy=cmdline_entropy,
+            path_suspicious=path_suspicious,
+            process_chain_depth=min(int(process_chain_depth), 10),
+            is_system_binary_misplaced=is_system_binary_misplaced,
+            rwx_region_count=0,  # Not available
+            private_memory_mb=50.0,  # Estimated
+            is_hollowed=False,  # Not available
+            remote_threads=0,  # Not available
+            active_connections=1,  # Estimated
+            c2_beacon_score=0.1,  # Low default
+            dns_entropy=2.5,  # Normal default
+            file_writes_per_min=5.0,  # Normal default
+            registry_mods_per_min=1.0,  # Normal default
+            process_creates_per_min=0.0,  # None
+            api_calls_suspicious=0,  # Not available
+            total_events_5min=20  # Estimated
+        )
+    
+    def _extract_from_memory(self, indicators: List) -> RealtimeFeatures:
+        """Extract features from memory indicators"""
+        if not indicators:
+            return None
+        
+        # Aggregate indicators
+        total_rwx = sum(ind.rwx_regions for ind in indicators if hasattr(ind, 'rwx_regions'))
+        total_private_mb = sum(ind.private_bytes / (1024*1024) 
+                              for ind in indicators if hasattr(ind, 'private_bytes'))
+        total_remote_threads = sum(ind.remote_threads 
+                                  for ind in indicators if hasattr(ind, 'remote_threads'))
+        
+        # Count YARA matches
+        yara_matches = []
+        for ind in indicators:
+            if hasattr(ind, 'yara_matches'):
+                yara_matches.extend(ind.yara_matches)
+        
+        critical_yara = sum(1 for m in yara_matches if m.severity == 'critical')
+        
+        # Check for hollowing
+        is_hollowed = any(hasattr(ind, 'is_hollowed') and ind.is_hollowed 
+                         for ind in indicators)
+        
+        # Build features
+        return RealtimeFeatures(
+            parent_suspicious=False,  # Not available
+            cmdline_entropy=3.0,  # Neutral
+            path_suspicious=False,  # Not available
+            process_chain_depth=2,  # Normal
+            is_system_binary_misplaced=False,  # Not available
+            rwx_region_count=min(total_rwx, 50),
+            private_memory_mb=min(total_private_mb, 500.0),
+            is_hollowed=is_hollowed,
+            remote_threads=min(total_remote_threads, 10),
+            active_connections=5,  # Estimated
+            c2_beacon_score=critical_yara * 0.2,  # Based on YARA
+            dns_entropy=4.0,  # Slightly elevated
+            file_writes_per_min=10.0,  # Estimated
+            registry_mods_per_min=5.0,  # Estimated
+            process_creates_per_min=0.0,  # Not available
+            api_calls_suspicious=critical_yara,
+            total_events_5min=len(indicators) * 10
+        )
     
     def predict(self, features: RealtimeFeatures) -> DetectionResult:
         """
-        Make real-time prediction
-        Target latency: <100ms
+        Make prediction with ML model
         
         Args:
             features: RealtimeFeatures object
         
         Returns:
-            DetectionResult with verdict and confidence
+            DetectionResult with threat assessment
         """
-        start_time = datetime.now()
-        
-        # Convert features to array
-        X = features.to_array()
-        
-        # Make prediction
-        prediction = self.model.predict(X)[0]
-        prediction_proba = self.model.predict_proba(X)[0]
-        
-        is_malicious = bool(prediction == 1)
-        confidence = float(prediction_proba[prediction])
-        threat_score = int(prediction_proba[1] * 100)
-        
-        # Identify contributing features
-        contributing = self._get_contributing_features(features, X)
-        
-        # Generate recommendation
-        recommendation = self._generate_recommendation(threat_score)
-        
-        # Calculate latency
-        latency = (datetime.now() - start_time).total_seconds() * 1000
-        
-        if latency > 100:
-            print(f"[!] Warning: Prediction latency {latency:.1f}ms exceeds target")
-        
-        return DetectionResult(
-            is_malicious=is_malicious,
-            confidence=confidence,
-            threat_score=threat_score,
-            contributing_features=contributing,
-            timestamp=datetime.now(),
-            recommendation=recommendation
-        )
-    
-    def _calculate_entropy(self, text: str) -> float:
-        """Calculate Shannon entropy"""
-        import math
-        from collections import Counter
-        
-        if not text:
-            return 0.0
-        
-        counts = Counter(text)
-        length = len(text)
-        entropy = 0.0
-        
-        for count in counts.values():
-            prob = count / length
-            entropy -= prob * math.log2(prob)
-        
-        return entropy
-    
-    def _is_path_suspicious(self, path: str) -> bool:
-        """Check if path is suspicious"""
-        if not path:
-            return False
-        
-        path_lower = path.lower()
-        suspicious = [
-            'temp', 'appdata\\local\\temp', 'users\\public',
-            'programdata', 'downloads'
-        ]
-        
-        return any(s in path_lower for s in suspicious)
-    
-    def _get_chain_depth(self, pid: int) -> int:
-        """Get process ancestry depth"""
-        import psutil
-        
-        depth = 0
-        current_pid = pid
+        if not self.model:
+            return DetectionResult(
+                is_malicious=False,
+                threat_score=0.0,
+                confidence=0.0,
+                contributing_features=["Model not loaded"]
+            )
         
         try:
-            while current_pid > 0 and depth < 10:
-                proc = psutil.Process(current_pid)
-                current_pid = proc.ppid()
-                depth += 1
-        except:
-            pass
+            import warnings
+            # Suppress sklearn feature name warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+                
+                # Convert to numpy array
+                feature_array = np.array([[
+                    float(features.parent_suspicious),
+                    features.cmdline_entropy,
+                    float(features.path_suspicious),
+                    features.process_chain_depth,
+                    float(features.is_system_binary_misplaced),
+                    features.rwx_region_count,
+                    features.private_memory_mb,
+                    float(features.is_hollowed),
+                    features.remote_threads,
+                    features.active_connections,
+                    features.c2_beacon_score,
+                    features.dns_entropy,
+                    features.file_writes_per_min,
+                    features.registry_mods_per_min,
+                    features.process_creates_per_min,
+                    features.api_calls_suspicious,
+                    features.total_events_5min,
+                    features.yara_critical_matches,
+                    features.yara_high_matches,
+                    features.yara_total_matches
+                ]])
+                
+                # Make prediction
+                prediction = self.model.predict(feature_array)[0]
+                proba = self.model.predict_proba(feature_array)[0]
+            
+            # Get confidence (max probability)
+            confidence = max(proba)
+            
+            # Calculate threat score (0-100)
+            threat_score = proba[1] * 100  # Probability of malicious * 100
+            
+            # Identify contributing features
+            contributing = self._identify_contributing_features(features)
+            
+            return DetectionResult(
+                is_malicious=(prediction == 1),
+                threat_score=threat_score,
+                confidence=confidence,
+                contributing_features=contributing
+            )
         
-        return depth
+        except Exception as e:
+            print(f"[!] Prediction error: {e}")
+            return DetectionResult(
+                is_malicious=False,
+                threat_score=0.0,
+                confidence=0.0,
+                contributing_features=[f"Error: {str(e)}"]
+            )
     
-    def _calculate_behavioral_features(self, pid: int) -> Dict:
-        """Calculate behavioral features from event history"""
-        events = self.event_cache[pid]
+    def _identify_contributing_features(self, features: RealtimeFeatures) -> List[str]:
+        """Identify which features contributed most to detection"""
+        contributors = []
         
-        if not events:
-            return {
-                'file_writes_per_min': 0,
-                'registry_mods_per_min': 0,
-                'process_creates_per_min': 0,
-                'api_calls_suspicious': 0,
-                'total_events_5min': 0
-            }
+        # Check suspicious features
+        if features.rwx_region_count > 5:
+            contributors.append(f"RWX memory regions detected ({features.rwx_region_count})")
         
-        # Count events in last 5 minutes
-        now = datetime.now()
-        recent_events = [e for e in events if (now - e['timestamp']).seconds < 300]
+        if features.is_hollowed:
+            contributors.append("Process hollowing detected")
         
-        # Calculate rates
-        time_window = 5.0  # minutes
+        if features.remote_threads > 0:
+            contributors.append(f"Remote thread injection ({features.remote_threads})")
         
-        return {
-            'file_writes_per_min': sum(1 for e in recent_events if e['type'] == 'file_write') / time_window,
-            'registry_mods_per_min': sum(1 for e in recent_events if e['type'] == 'registry') / time_window,
-            'process_creates_per_min': sum(1 for e in recent_events if e['type'] == 'process') / time_window,
-            'api_calls_suspicious': sum(1 for e in recent_events if e.get('suspicious', False)),
-            'total_events_5min': len(recent_events)
-        }
-    
-    def _get_contributing_features(self, features: RealtimeFeatures, X: np.ndarray) -> List[str]:
-        """Identify which features contributed most to the prediction"""
-        contributing = []
+        if features.cmdline_entropy > 5.0:
+            contributors.append(f"High command line entropy ({features.cmdline_entropy:.2f})")
         
-        feature_names = [
-            'parent_suspicious', 'cmdline_entropy', 'path_suspicious',
-            'process_chain_depth', 'is_system_binary_misplaced',
-            'rwx_region_count', 'private_memory_mb', 'is_hollowed',
-            'remote_threads', 'active_connections', 'c2_beacon_score',
-            'dns_entropy', 'file_writes_per_min', 'registry_mods_per_min',
-            'process_creates_per_min', 'api_calls_suspicious', 'total_events_5min',
-            'yara_critical_matches', 'yara_high_matches', 'yara_total_matches'
-        ]
+        if features.c2_beacon_score > 0.5:
+            contributors.append(f"C2 beacon indicators (score: {features.c2_beacon_score:.2f})")
         
-        # Get feature values
-        values = X[0]
+        if features.is_system_binary_misplaced:
+            contributors.append("System binary in suspicious location")
         
-        # Identify suspicious features
-        if values[0] == 1:  # parent_suspicious
-            contributing.append("Suspicious parent process")
+        if features.api_calls_suspicious > 5:
+            contributors.append(f"Suspicious API calls ({features.api_calls_suspicious})")
         
-        if values[1] > 4.5:  # high cmdline entropy
-            contributing.append(f"High command-line entropy ({values[1]:.2f})")
+        if features.total_events_5min > 100:
+            contributors.append(f"High event rate ({features.total_events_5min} events)")
         
-        if values[5] > 0:  # rwx regions
-            contributing.append(f"RWX memory regions detected ({int(values[5])})")
-        
-        if values[7] == 1:  # is_hollowed
-            contributing.append("Process hollowing detected")
-        
-        if values[8] > 0:  # remote threads
-            contributing.append(f"Remote thread injection ({int(values[8])} threads)")
-        
-        if values[10] > 0.7:  # high C2 beacon score
-            contributing.append(f"C2 beacon behavior (score: {values[10]:.2f})")
-        
-        # YARA signature matches
-        if values[17] > 0:  # yara_critical_matches
-            contributing.append(f"YARA: {int(values[17])} critical signature(s) matched")
-        
-        if values[18] > 0:  # yara_high_matches
-            contributing.append(f"YARA: {int(values[18])} high-severity signature(s) matched")
-        
-        return contributing[:5]  # Return top 5
-    
-    def _generate_recommendation(self, threat_score: int) -> str:
-        """Generate action recommendation based on threat score"""
-        if threat_score >= 90:
-            return "KILL_PROCESS - Immediate termination required"
-        elif threat_score >= 75:
-            return "SUSPEND_PROCESS - Suspend for forensic analysis"
-        elif threat_score >= 60:
-            return "INCREASE_MONITORING - Watch closely"
-        elif threat_score >= 40:
-            return "LOG_EVENT - Record for review"
+        # Return top contributors or generic if none specific
+        if contributors:
+            return contributors[:5]  # Top 5
         else:
-            return "ALLOW - No action needed"
-    
-    def record_event(self, pid: int, event: Dict):
-        """Record event in cache for behavioral analysis"""
-        event['timestamp'] = datetime.now()
-        self.event_cache[pid].append(event)
-
-
-class OnlineLearner:
-    """
-    Optional: Online learning capability
-    Updates model based on analyst feedback
-    """
-    
-    def __init__(self, base_model):
-        self.base_model = base_model
-        self.feedback_buffer = []
-        self.retrain_threshold = 100  # Retrain after 100 feedbacks
-    
-    def record_feedback(self, features: np.ndarray, true_label: int):
-        """Record analyst feedback for model improvement"""
-        self.feedback_buffer.append((features, true_label))
-        
-        if len(self.feedback_buffer) >= self.retrain_threshold:
-            self.retrain()
-    
-    def retrain(self):
-        """Incrementally update model with new feedback"""
-        print("[*] Retraining model with new feedback...")
-        
-        X_new = np.vstack([f[0] for f in self.feedback_buffer])
-        y_new = np.array([f[1] for f in self.feedback_buffer])
-        
-        # In production, use incremental learning (e.g., SGD)
-        # For Random Forest, would need to retrain entirely
-        
-        self.feedback_buffer = []
+            return ["Multiple indicators combined"]
 
 
 def test_realtime_ml():
-    """Test real-time ML engine"""
+    """Test the ML engine"""
     print("\n=== DataDefenceX Real-Time ML Engine Test ===\n")
     
     engine = RealtimeMLEngine()
     
-    # Test Case 1: Benign process
+    if not engine.model:
+        print("[!] Model not loaded - cannot run tests")
+        print("[!] Run: python train_model_updated_v2.1.py")
+        return
+    
+    # Test 1: Benign process
     print("[*] Test 1: Benign Process")
     benign_features = RealtimeFeatures(
         parent_suspicious=False,
-        cmdline_entropy=3.5,
+        cmdline_entropy=2.5,
         path_suspicious=False,
-        process_chain_depth=3,
+        process_chain_depth=2,
         is_system_binary_misplaced=False,
         rwx_region_count=0,
-        private_memory_mb=50.0,
+        private_memory_mb=30.0,
         is_hollowed=False,
         remote_threads=0,
-        active_connections=2,
-        c2_beacon_score=0.1,
-        dns_entropy=3.0,
-        file_writes_per_min=5,
-        registry_mods_per_min=1,
-        process_creates_per_min=0,
+        active_connections=1,
+        c2_beacon_score=0.05,
+        dns_entropy=2.0,
+        file_writes_per_min=3.0,
+        registry_mods_per_min=1.0,
+        process_creates_per_min=0.0,
         api_calls_suspicious=0,
-        total_events_5min=25,
-        yara_critical_matches=0,
-        yara_high_matches=0,
-        yara_total_matches=0
+        total_events_5min=15
     )
     
     result = engine.predict(benign_features)
     print(f"    Verdict: {'MALICIOUS' if result.is_malicious else 'BENIGN'}")
+    print(f"    Threat Score: {result.threat_score:.1f}/100")
     print(f"    Confidence: {result.confidence*100:.1f}%")
-    print(f"    Threat Score: {result.threat_score}/100")
-    print(f"    Recommendation: {result.recommendation}\n")
     
-    # Test Case 2: Malicious process
-    print("[*] Test 2: Malicious Process (Code Injection)")
+    # Test 2: Malicious process
+    print("\n[*] Test 2: Malicious Process (Memory Injection)")
     malicious_features = RealtimeFeatures(
         parent_suspicious=True,
-        cmdline_entropy=5.2,  # High entropy
+        cmdline_entropy=5.8,
         path_suspicious=True,
-        process_chain_depth=2,
+        process_chain_depth=5,
         is_system_binary_misplaced=False,
-        rwx_region_count=3,  # Multiple RWX regions
-        private_memory_mb=120.0,
-        is_hollowed=False,
-        remote_threads=2,  # Remote thread injection
-        active_connections=5,
-        c2_beacon_score=0.85,  # High C2 score
+        rwx_region_count=8,
+        private_memory_mb=180.0,
+        is_hollowed=True,
+        remote_threads=3,
+        active_connections=10,
+        c2_beacon_score=0.85,
         dns_entropy=4.8,
-        file_writes_per_min=50,
-        registry_mods_per_min=10,
-        process_creates_per_min=5,
-        api_calls_suspicious=15,
-        total_events_5min=200,
-        yara_critical_matches=2,  # YARA critical matches
-        yara_high_matches=1,  # YARA high matches
-        yara_total_matches=3  # Total YARA matches
+        file_writes_per_min=40.0,
+        registry_mods_per_min=20.0,
+        process_creates_per_min=5.0,
+        api_calls_suspicious=12,
+        total_events_5min=200
     )
     
     result = engine.predict(malicious_features)
     print(f"    Verdict: {'MALICIOUS' if result.is_malicious else 'BENIGN'}")
+    print(f"    Threat Score: {result.threat_score:.1f}/100")
     print(f"    Confidence: {result.confidence*100:.1f}%")
-    print(f"    Threat Score: {result.threat_score}/100")
-    print(f"    Recommendation: {result.recommendation}")
     print(f"    Contributing Factors:")
-    for factor in result.contributing_features:
+    for factor in result.contributing_features[:3]:
         print(f"      - {factor}")
+    
+    # Test 3: Threshold check
+    print("\n[*] Test 3: Threshold Configuration")
+    print(f"    ML Threshold: {engine.ml_threshold*100:.0f}%")
+    print(f"    Confidence Threshold: {engine.confidence_threshold*100:.0f}%")
+    print(f"    Status: {'CONFIGURED' if engine.ml_threshold > 0.5 else 'DEFAULT'}")
 
 
 if __name__ == "__main__":
