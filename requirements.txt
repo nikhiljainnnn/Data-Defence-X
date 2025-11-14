@@ -1,0 +1,15 @@
+# Core ML & Data Processing
+pandas==2.0.3
+numpy==1.24.3
+scikit-learn==1.3.0
+
+# Windows System Access
+psutil==5.9.5
+pywin32==306
+
+# Utilities
+colorama==0.4.6
+tqdm==4.66.1
+
+# Optional but recommended
+requests==2.31.0
