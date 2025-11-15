@@ -104,7 +104,7 @@ class YARAScanner:
         """Create improved YARA rules with lower false positives"""
         
         improved_rules = {
-            'fileless_powershell.yar': '''
+            'fileless_powershell.yar': r'''
 rule Fileless_PowerShell_EncodedCommand
 {
     meta:
@@ -196,7 +196,7 @@ rule Memory_Injection_Indicators
         )
 }
 ''',
-            'fileless_rundll32.yar': '''
+            'fileless_rundll32.yar': r'''
 rule Fileless_Rundll32_Suspicious
 {
     meta:
@@ -222,7 +222,7 @@ rule Fileless_Rundll32_Suspicious
         )
 }
 ''',
-            'fileless_cobaltstrike.yar': '''
+            'fileless_cobaltstrike.yar': r'''
 rule CobaltStrike_Beacon
 {
     meta:

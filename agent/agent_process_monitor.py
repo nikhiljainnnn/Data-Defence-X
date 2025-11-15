@@ -30,9 +30,10 @@ class ProcessEvent:
 
 
 # Whitelist of legitimate system and common processes
+# Note: PowerShell and cmd.exe are NOT whitelisted - they need to be analyzed for suspicious commands
 WHITELIST_PROCESSES = {
     'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe',
-    'code.exe', 'python.exe', 'powershell.exe', 'cmd.exe',
+    'code.exe', 'python.exe',
     'conhost.exe', 'csrss.exe', 'explorer.exe', 'dwm.exe',
     'svchost.exe', 'lsass.exe', 'wininit.exe', 'services.exe',
     'spoolsv.exe', 'rundll32.exe', 'dllhost.exe', 'taskhostw.exe',
@@ -241,6 +242,11 @@ class ProcessMonitorAgent:
         try:
             name = str(process_info['name']).lower()
             exe_path = str(process_info['exe_path']).lower()
+            cmdline = str(process_info.get('cmdline', '')).lower()
+            
+            # NEVER whitelist PowerShell or cmd.exe - they must be analyzed
+            if name in ['powershell.exe', 'pwsh.exe', 'cmd.exe']:
+                return False
             
             # Check process name whitelist
             if name in WHITELIST_PROCESSES:
@@ -249,9 +255,10 @@ class ProcessMonitorAgent:
             # Check if running from trusted path
             for trusted_path in TRUSTED_PATHS:
                 if exe_path.startswith(trusted_path.lower()):
-                    # Still check for suspicious cmdline
-                    if not self.check_suspicious_patterns(process_info['cmdline']):
-                        return True
+                    # Still check for suspicious cmdline - if suspicious, don't whitelist
+                    if self.check_suspicious_patterns(process_info.get('cmdline', '')):
+                        return False  # Don't whitelist if suspicious patterns found
+                    return True
             
             return False
         
@@ -268,9 +275,58 @@ class ProcessMonitorAgent:
             cmdline_str = str(process_info.get('cmdline', '')).lower()
             exe_path = str(process_info.get('exe_path', '')).lower()
             
-            # Check if whitelisted
+            # Check if whitelisted (but PowerShell/cmd are never whitelisted)
             if self.is_whitelisted(process_info):
                 return 0, []
+            
+            # Special handling for PowerShell and cmd.exe - they're always suspicious if they have parameters
+            is_powershell = name in ['powershell.exe', 'pwsh.exe']
+            is_cmd = name == 'cmd.exe'
+            
+            # PowerShell detection - only flag TRULY suspicious patterns
+            if is_powershell and cmdline_str:
+                cmdline_lower = cmdline_str.lower()
+                
+                # CRITICAL: Encoded commands (highest priority)
+                if any(flag in cmdline_lower for flag in ['-encodedcommand', '-enc ', 'encodedcommand', ' -enc']):
+                    score += 90  # Very high score for encoded commands
+                    indicators.append("PowerShell with encoded command detected (CRITICAL)")
+                    # Also check if there's actual base64 data after the flag
+                    import re
+                    base64_pattern = r'[A-Za-z0-9+/]{20,}={0,2}'
+                    if re.search(base64_pattern, cmdline_str):
+                        score += 10  # Extra points for actual base64 data
+                        indicators.append("Contains Base64-encoded payload")
+                
+                # HIGH: Hidden window + Bypass execution policy (common attack pattern)
+                elif ('-windowstyle' in cmdline_lower and 'hidden' in cmdline_lower) and \
+                     ('-executionpolicy' in cmdline_lower and 'bypass' in cmdline_lower):
+                    score += 75  # High score for hidden + bypass combo
+                    indicators.append("PowerShell with hidden window and execution policy bypass")
+                
+                # HIGH: Download + Execute patterns
+                elif any(dl_pattern in cmdline_lower for dl_pattern in ['downloadstring', 'downloadfile', 'invoke-webrequest', 'iwr', 'curl', 'wget']) and \
+                     any(exec_pattern in cmdline_lower for exec_pattern in ['invoke-expression', 'iex', 'exec', 'start-process']):
+                    score += 80  # Very high for download + execute
+                    indicators.append("PowerShell download and execute pattern detected")
+                
+                # MEDIUM: Multiple suspicious parameters together
+                elif sum(1 for param in ['-windowstyle', 'hidden', '-executionpolicy', 'bypass', '-noprofile', '-noninteractive'] if param in cmdline_lower) >= 2:
+                    score += 50  # Medium-high score for multiple suspicious params
+                    indicators.append("PowerShell with multiple suspicious parameters")
+                
+                # MEDIUM: Obfuscation patterns
+                elif any(obfusc in cmdline_lower for obfusc in ['frombase64string', 'decode', 'decompress', 'unzip']):
+                    score += 45
+                    indicators.append("PowerShell with obfuscation/decode patterns")
+                
+                # LOW: Single suspicious parameter (might be legitimate)
+                elif any(param in cmdline_lower for param in ['-windowstyle hidden', '-executionpolicy bypass', '-noprofile']):
+                    score += 20  # Lower score for single suspicious param
+                    indicators.append("PowerShell with suspicious parameter")
+                
+                # Don't score normal PowerShell commands (like -noexit for terminals)
+                # Only flag if there are actual suspicious indicators
             
             # Check for suspicious command line patterns
             pattern_matches = self.check_suspicious_patterns(cmdline_str)
@@ -395,8 +451,10 @@ class ProcessMonitorAgent:
                     # Calculate suspicion
                     score, indicators = self.calculate_suspicion_score(process_info)
                     
-                    # Only report suspicious processes
-                    if score >= 70:  # Raised threshold to reduce false positives
+                    # Only report suspicious processes (PowerShell needs actual suspicious indicators)
+                    is_powershell = process_info.get('name', '').lower() in ['powershell.exe', 'pwsh.exe']
+                    threshold = 40 if is_powershell else 70  # PowerShell needs 40+ (suspicious patterns only)
+                    if score >= threshold:
                         event = ProcessEvent(
                             timestamp=datetime.now(),
                             event_type='suspicious',
@@ -438,8 +496,10 @@ class ProcessMonitorAgent:
                         
                         score, indicators = self.calculate_suspicion_score(process_info)
                         
-                        # Report suspicious new processes
-                        if score >= 70:
+                        # Report suspicious new processes (PowerShell needs actual suspicious indicators)
+                        is_powershell = process_info.get('name', '').lower() in ['powershell.exe', 'pwsh.exe']
+                        threshold = 40 if is_powershell else 70  # PowerShell needs 40+ (suspicious patterns only)
+                        if score >= threshold:
                             event = ProcessEvent(
                                 timestamp=datetime.now(),
                                 event_type='created',
@@ -484,8 +544,15 @@ class ProcessMonitorAgent:
             if not detailed_info:
                 return None
             
-            # Use cmdline from process_info if available (more reliable for new processes)
+            # CRITICAL: Use cmdline from process_info if available (more reliable for new processes)
+            # This preserves the full command line including encoded commands
             if process_info.get('cmdline'):
+                if isinstance(process_info['cmdline'], list):
+                    detailed_info['cmdline'] = ' '.join(process_info['cmdline'])
+                else:
+                    detailed_info['cmdline'] = str(process_info['cmdline'])
+            # If cmdline is empty in detailed_info but we have it in process_info, use it
+            elif not detailed_info.get('cmdline') and process_info.get('cmdline'):
                 if isinstance(process_info['cmdline'], list):
                     detailed_info['cmdline'] = ' '.join(process_info['cmdline'])
                 else:
@@ -494,8 +561,11 @@ class ProcessMonitorAgent:
             # Calculate suspicion score
             score, indicators = self.calculate_suspicion_score(detailed_info)
             
-            # Only return event if suspicious (lower threshold for better detection)
-            if score >= 30:  # Lowered from 50 to catch more suspicious processes
+            # Only return event if suspicious (but PowerShell needs actual suspicious indicators)
+            is_powershell = detailed_info.get('name', '').lower() in ['powershell.exe', 'pwsh.exe']
+            # PowerShell needs at least 40 points (actual suspicious patterns), others need 30
+            threshold = 40 if is_powershell else 30  # Higher threshold for PowerShell to avoid false positives
+            if score >= threshold:
                 return ProcessEvent(
                     timestamp=datetime.now(),
                     event_type='created',

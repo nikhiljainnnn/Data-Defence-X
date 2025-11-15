@@ -192,31 +192,21 @@ class RealtimeDetectionSystem:
         
         name_lower = name.lower()
         
+        # NEVER whitelist PowerShell or cmd.exe - they must always be analyzed
+        if name_lower in ['powershell.exe', 'pwsh.exe', 'cmd.exe']:
+            return False
+        
         # Check trusted processes
         for trusted in self.whitelist.get('trusted_processes', []):
             if name_lower == trusted.lower():
                 return True
         
-        # Check trusted paths (but allow PowerShell from System32 if command is suspicious)
+        # Check trusted paths
         if path:
             path_lower = path.lower()
-            # Don't whitelist PowerShell from System32 if it has suspicious parameters
-            # This allows detection of encoded PowerShell commands even from trusted paths
-            is_powershell = 'powershell' in name_lower
-            is_trusted_path = False
-            
             for trusted_path in self.whitelist.get('trusted_paths', []):
                 if path_lower.startswith(trusted_path.lower()):
-                    is_trusted_path = True
-                    break
-            
-            # If PowerShell from trusted path, still check command line before whitelisting
-            if is_trusted_path and is_powershell:
-                # Don't auto-whitelist - let it be analyzed for suspicious commands
-                return False
-            
-            if is_trusted_path:
-                return True
+                    return True
         
         return False
     
@@ -345,6 +335,7 @@ class RealtimeDetectionSystem:
         
         print("[ProcessMonitor] Watching for new processes...")
         existing_pids = set()
+        analyzed_pids = set()  # Track which PIDs we've already analyzed
         
         # Get existing PIDs
         try:
@@ -362,38 +353,66 @@ class RealtimeDetectionSystem:
                     
                     pid = proc.info['pid']
                     current_pids.add(pid)
+                    name = proc.info.get('name', '')
                     
-                    # Only analyze new processes
+                    # For PowerShell, analyze immediately even if we've seen the PID before
+                    # (cmdline might have changed or we might have missed it)
+                    is_powershell = 'powershell' in name.lower()
+                    should_analyze = False
+                    
                     if pid not in existing_pids:
+                        # New process - always analyze
+                        should_analyze = True
+                    elif is_powershell:
+                        # For PowerShell, check if cmdline has suspicious patterns
+                        # Even if we've seen the PID, the cmdline might be different
+                        cmdline_check = proc.info.get('cmdline', [])
+                        cmdline_str_check = ' '.join(cmdline_check) if cmdline_check else ''
+                        # Only re-analyze if it has suspicious patterns we haven't seen
+                        if '-encodedcommand' in cmdline_str_check.lower() or '-enc' in cmdline_str_check.lower():
+                            # This is suspicious - analyze it even if we've seen the PID
+                            should_analyze = True
+                        elif pid not in analyzed_pids:
+                            # PowerShell we haven't analyzed yet - analyze it
+                            should_analyze = True
+                    
+                    if should_analyze:
                         name = proc.info.get('name', '')
                         exe_path = proc.info.get('exe', '')
                         cmdline_raw = proc.info.get('cmdline', [])
                         
-                        # Get command line as string
+                        # Get command line as string - try multiple methods
                         cmdline = ' '.join(cmdline_raw) if cmdline_raw else ''
                         
-                        # Debug: Log PowerShell processes for troubleshooting
-                        if 'powershell' in name.lower():
-                            print(f"[DEBUG] New PowerShell process detected: PID={pid}, CmdLine={cmdline[:100] if cmdline else '(empty)'}")
+                        # If cmdline is empty, try to get it directly from the process
+                        if not cmdline or (is_powershell and len(cmdline) < 10):
+                            try:
+                                proc_obj = psutil.Process(pid)
+                                cmdline_parts = proc_obj.cmdline()
+                                if cmdline_parts:
+                                    cmdline = ' '.join(cmdline_parts)
+                            except:
+                                pass
                         
-                        # Skip whitelisted processes (but PowerShell from System32 is handled specially)
-                        if self._is_whitelisted_process(name, exe_path):
-                            # Special case: PowerShell from System32 should still be checked if cmdline is suspicious
-                            if 'powershell' in name.lower() and cmdline:
-                                # Check if command line has suspicious patterns before skipping
-                                suspicious_keywords = ['-encodedcommand', '-enc', '-windowstyle', '-executionpolicy', 'bypass', 'hidden']
-                                if any(keyword.lower() in cmdline.lower() for keyword in suspicious_keywords):
-                                    # Don't skip - analyze it
-                                    pass
-                                else:
-                                    self.stats['false_positives_avoided'] += 1
-                                    continue
-                            else:
+                        # Debug: Only log PowerShell with suspicious patterns
+                        if is_powershell and any(susp in cmdline.lower() for susp in ['-encodedcommand', '-enc', '-windowstyle hidden', 'bypass', 'downloadstring', 'invoke-expression']):
+                            print(f"\n[DEBUG] Suspicious PowerShell detected: PID={pid}")
+                            print(f"[DEBUG] CmdLine={cmdline[:200] if cmdline else '(empty)'}")
+                            print(f"[DEBUG] IsNew={pid not in existing_pids}")
+                        
+                        # NEVER skip PowerShell or cmd.exe - always analyze them
+                        if 'powershell' not in name.lower() and 'cmd.exe' not in name.lower():
+                            # Skip whitelisted processes (but PowerShell/cmd are never whitelisted)
+                            if self._is_whitelisted_process(name, exe_path):
                                 self.stats['false_positives_avoided'] += 1
                                 continue
                         
-                        # Skip system PIDs
-                        if not self._should_scan_process(pid):
+                        # For PowerShell, don't skip due to rate limiting if it has encoded commands
+                        if is_powershell and ('-encodedcommand' in cmdline.lower() or '-enc' in cmdline.lower()):
+                            # Bypass rate limiting for suspicious PowerShell
+                            pass
+                        elif not self._should_scan_process(pid):
+                            # Skip system PIDs (but not suspicious PowerShell)
                             continue
                         
                         # Analyze process (ensure cmdline is included)
@@ -402,27 +421,73 @@ class RealtimeDetectionSystem:
                             proc_info = proc.info.copy()
                             proc_info['cmdline'] = cmdline  # Use the string version
                             
+                            # Debug: Show what we're analyzing
+                            if is_powershell and ('-encodedcommand' in cmdline.lower() or '-enc' in cmdline.lower()):
+                                print(f"\n[DEBUG] Analyzing suspicious PowerShell: PID={pid}")
+                                print(f"[DEBUG] Full CmdLine: {cmdline}")
+                            
                             event = self.process_agent.analyze_process(proc_info)
-                            # Lower threshold to catch more suspicious processes (30 instead of 50)
-                            if event and event.suspicion_score >= 30:
+                            # PowerShell needs actual suspicious indicators (threshold is 40 in analyze_process)
+                            # But encoded commands should always trigger (score 90+)
+                            if event and event.suspicion_score >= 40:  # Only flag truly suspicious PowerShell
                                 self.process_events.put({
                                     'type': 'process',
                                     'event': event,
                                     'timestamp': datetime.now()
                                 })
                                 self.stats['processes_scanned'] += 1
+                                analyzed_pids.add(pid)  # Mark as analyzed
                                 
                                 # Debug: Log when PowerShell is detected
-                                if 'powershell' in name.lower():
-                                    print(f"[DEBUG] PowerShell threat detected: PID={pid}, Score={event.suspicion_score}, CmdLine={cmdline[:100]}")
+                                if is_powershell:
+                                    print(f"\n[DEBUG] PowerShell threat detected!")
+                                    print(f"[DEBUG] PID={pid}, Score={event.suspicion_score}")
+                                    print(f"[DEBUG] CmdLine={cmdline[:200]}")
+                                    print(f"[DEBUG] Indicators: {event.suspicious_indicators[:3]}")
+                                
+                                # CRITICAL: For high-suspicion PowerShell (encoded commands), bypass ML and alert directly
+                                if is_powershell and event.suspicion_score >= 80:
+                                    print(f"\n[!] CRITICAL: High-suspicion PowerShell detected - bypassing ML thresholds")
+                                    # Create a direct detection result using a simple class
+                                    class SimpleResult:
+                                        def __init__(self, threat_score, confidence, contributing_features):
+                                            self.threat_score = threat_score
+                                            self.confidence = confidence
+                                            self.contributing_features = contributing_features
+                                            self.is_malicious = True
+                                    
+                                    direct_result = SimpleResult(
+                                        threat_score=event.suspicion_score,
+                                        confidence=0.95,  # High confidence for encoded commands
+                                        contributing_features=event.suspicious_indicators[:5]
+                                    )
+                                    self.detection_results.put({
+                                        'event': {
+                                            'type': 'process',
+                                            'event': event,
+                                            'timestamp': datetime.now()
+                                        },
+                                        'result': direct_result,
+                                        'adjusted_score': event.suspicion_score,
+                                        'bypass_ml': True  # Flag to skip ML processing
+                                    })
+                                    self.stats['threats_detected'] += 1
+                                    self._print_detection({
+                                        'type': 'process',
+                                        'event': event
+                                    }, direct_result, event.suspicion_score)
+                                    # Don't also send to ML engine - we've already handled it
+                                    continue
                         except Exception as e:
                             # Debug: Print error for troubleshooting
-                            if 'powershell' in name.lower():
+                            if is_powershell:
                                 print(f"[DEBUG] Error analyzing PowerShell process {pid}: {e}")
+                                import traceback
+                                traceback.print_exc()
                             pass
                 
                 existing_pids = current_pids
-                time.sleep(2)  # Check every 2 seconds
+                time.sleep(1)  # Check every 1 second (faster for better detection)
                 
             except Exception as e:
                 time.sleep(1)
@@ -500,6 +565,10 @@ class RealtimeDetectionSystem:
     def _analyze_event(self, event_data: Dict):
         """Analyze event with ML engine and context-aware scoring"""
         try:
+            # Skip ML analysis if this was already handled by direct bypass
+            if event_data.get('bypass_ml', False):
+                return
+            
             features = None
             process_name = ''
             process_path = ''
@@ -509,6 +578,10 @@ class RealtimeDetectionSystem:
                 process_event = event_data['event']
                 process_name = process_event.name
                 process_path = process_event.exe_path
+                
+                # Skip ML for high-suspicion PowerShell (already handled directly)
+                if 'powershell' in process_name.lower() and process_event.suspicion_score >= 80:
+                    return
                 
                 features = self.ml_engine.extract_features(
                     process_event={
@@ -530,26 +603,67 @@ class RealtimeDetectionSystem:
                 )
             
             if features:
-                # Make prediction
-                result = self.ml_engine.predict(features)
+                # Make prediction (with error handling for ML model compatibility issues)
+                try:
+                    result = self.ml_engine.predict(features)
+                except Exception as e:
+                    # If ML prediction fails (e.g., model compatibility), use process suspicion score
+                    if event_data['type'] == 'process':
+                        process_event = event_data['event']
+                        # Create a fallback result based on process suspicion score
+                        class FallbackResult:
+                            def __init__(self, threat_score, confidence, contributing_features):
+                                self.threat_score = threat_score
+                                self.confidence = confidence
+                                self.contributing_features = contributing_features
+                                self.is_malicious = threat_score >= 70
+                        
+                        # Use process suspicion score as threat score
+                        threat_score = process_event.suspicion_score
+                        # Confidence based on suspicion score (higher score = higher confidence)
+                        confidence = min(0.95, threat_score / 100.0)
+                        
+                        result = FallbackResult(
+                            threat_score=threat_score,
+                            confidence=confidence,
+                            contributing_features=process_event.suspicious_indicators[:5]
+                        )
+                    else:
+                        # For memory events, skip if ML fails
+                        return
                 
                 # Context-aware scoring adjustment
                 adjusted_score = result.threat_score
                 
-                # Reduce score for processes in trusted paths (might be false positive)
-                if process_path:
+                # Check if this is a PowerShell process with high suspicion score
+                is_powershell = 'powershell' in process_name.lower()
+                high_suspicion_powershell = False
+                if event_data['type'] == 'process':
+                    proc_event = event_data['event']
+                    if is_powershell and proc_event.suspicion_score >= 80:
+                        high_suspicion_powershell = True
+                        # For high-suspicion PowerShell, use the process suspicion score directly
+                        adjusted_score = proc_event.suspicion_score
+                
+                # Reduce score for processes in trusted paths (but NOT for high-suspicion PowerShell)
+                if process_path and not high_suspicion_powershell:
                     for trusted_path in self.whitelist.get('trusted_paths', []):
                         if process_path.lower().startswith(trusted_path.lower()):
                             adjusted_score = adjusted_score * 0.7  # 30% reduction
                             break
                 
-                # Apply thresholds from whitelist
+                # Apply thresholds from whitelist (lower for high-suspicion PowerShell)
                 thresholds = self.whitelist.get('thresholds', {})
-                ml_threshold = thresholds.get('ml_threshold', 0.70) * 100
-                confidence_threshold = thresholds.get('confidence_threshold', 0.75)
+                if high_suspicion_powershell:
+                    # For high-suspicion PowerShell (encoded commands), use very low thresholds
+                    ml_threshold = 50  # Lower threshold
+                    confidence_threshold = 0.5  # Lower confidence requirement
+                else:
+                    ml_threshold = thresholds.get('ml_threshold', 0.70) * 100
+                    confidence_threshold = thresholds.get('confidence_threshold', 0.75)
                 
-                # Only alert if BOTH thresholds met
-                if adjusted_score >= ml_threshold and result.confidence >= confidence_threshold:
+                # Alert if thresholds met (or if high-suspicion PowerShell)
+                if adjusted_score >= ml_threshold and (result.confidence >= confidence_threshold or high_suspicion_powershell):
                     self.detection_results.put({
                         'event': event_data,
                         'result': result,
